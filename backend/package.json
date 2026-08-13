@@ -1,0 +1,24 @@
+{
+  "name": "car-companion-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "tsx": "^4.16.2",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.10"
+  }
+}
