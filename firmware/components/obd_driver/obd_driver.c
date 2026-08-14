@@ -13,6 +13,7 @@
 #include "host/ble_gattc.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
+#include "esp_timer.h"
 
 #include <string.h>
 
@@ -29,6 +30,25 @@ static bool s_ready = false; // true recien despues de completar ATZ/ATE0 (ver o
 static SemaphoreHandle_t s_cmd_mutex;
 static obd_response_cb_t s_pending_cb = NULL;
 static void *s_pending_ctx = NULL;
+
+/* BUG ENCONTRADO EN REVISION: si el adaptador nunca responde a un comando
+ * (se desconectó a mitad de camino, se colgó, etc.), la versión anterior
+ * dejaba el mutex tomado para siempre — cada llamada siguiente a
+ * obd_driver_send_command habría esperado 2s y fallado con timeout, sin
+ * recuperarse nunca aunque el adaptador volviera a responder después.
+ * Este timer es el watchdog que libera el turno si no llega respuesta a
+ * tiempo, para que un solo comando perdido no mate el driver entero. */
+#define COMMAND_TIMEOUT_MS 3000
+static esp_timer_handle_t s_response_timeout_timer;
+
+static void on_response_timeout(void *arg)
+{
+    ESP_LOGW(TAG, "timeout esperando respuesta OBD, liberando turno para el siguiente comando");
+    s_pending_cb = NULL;
+    s_pending_ctx = NULL;
+    s_response_len = 0;
+    xSemaphoreGive(s_cmd_mutex);
+}
 
 /* Buffer de acumulacion de respuesta: el ELM327 puede mandar la respuesta en
  * varios paquetes BLE (notify), termina con el prompt '>' cuando esta completa. */
@@ -100,9 +120,22 @@ static int on_svc_disc(uint16_t conn_handle,
                         const struct ble_gatt_svc *service,
                         void *arg)
 {
-    if (error->status != 0) {
+    /* BUG ENCONTRADO EN REVISION: NimBLE llama este callback una última vez
+     * al terminar la búsqueda con error->status == BLE_HS_EDONE y service ==
+     * NULL — eso NO es un error, es la señal normal de "no hay más
+     * resultados". La versión anterior lo trataba como error y logueaba un
+     * falso positivo cada vez que el servicio SÍ se encontraba bien
+     * (create-y-log-error-en-el-camino-feliz es confuso para debuggear).
+     * Mismo patrón que ya está bien hecho en on_chr_disc, ahora unificado acá. */
+    if (error->status != 0 && error->status != BLE_HS_EDONE) {
         ESP_LOGE(TAG, "error descubriendo el servicio OBD (uuid configurado en "
                        "obd_driver_config.h): %d", error->status);
+        return 0;
+    }
+    if (service == NULL) {
+        /* Fin normal de la búsqueda. Si nunca entramos al branch de abajo,
+         * quiere decir que el UUID configurado en obd_driver_config.h no
+         * coincide con ningún servicio del adaptador — revisar ahí primero. */
         return 0;
     }
     ESP_LOGI(TAG, "servicio OBD encontrado, descubriendo caracteristicas...");
@@ -189,6 +222,18 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             s_write_char_handle = 0;
             s_notify_char_handle = 0;
             s_ready = false;
+            /* Si había un comando esperando respuesta cuando se desconectó,
+             * liberar el turno acá también — si no, obd_driver_send_command
+             * queda bloqueado esperando un mutex que nadie va a soltar hasta
+             * el timeout de 3s (funciona igual, pero es innecesariamente lento
+             * justo cuando ya sabemos que no va a llegar nada). */
+            esp_timer_stop(s_response_timeout_timer);
+            if (s_pending_cb != NULL) {
+                s_pending_cb = NULL;
+                s_pending_ctx = NULL;
+                s_response_len = 0;
+                xSemaphoreGive(s_cmd_mutex);
+            }
             start_scan();
             return 0;
 
@@ -206,11 +251,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             }
 
             if (s_response_len > 0 && s_response_buf[s_response_len - 1] == '>') {
-                /* Un pedido en particular considera que la característica de escritura
-                 * quedó lista al recibir la respuesta a la secuencia de init;
-                 * mientras eso no esté hecho de forma robusta (ver TODO en
-                 * obd_send_init_sequence), simplemente despachamos al callback
-                 * pendiente si existe. */
+                esp_timer_stop(s_response_timeout_timer); // llegó a tiempo, cancelar el watchdog
                 if (s_pending_cb != NULL) {
                     s_pending_cb(s_response_buf, s_response_len, s_pending_ctx);
                     s_pending_cb = NULL;
@@ -268,6 +309,12 @@ esp_err_t obd_driver_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    const esp_timer_create_args_t timer_args = {
+        .callback = &on_response_timeout,
+        .name = "obd_resp_timeout",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_response_timeout_timer));
+
     esp_err_t ret = nvs_flash_init(); // NimBLE guarda bonding/config en NVS
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -303,9 +350,11 @@ esp_err_t obd_driver_send_command(const char *command, obd_response_cb_t cb, voi
     s_pending_cb = cb;
     s_pending_ctx = ctx;
     obd_write_raw(command);
-    /* El mutex se libera en BLE_GAP_EVENT_NOTIFY_RX cuando llega la respuesta
-     * completa (o queda tomado hasta el próximo timeout si el adaptador no
-     * responde — aceptable para v1, revisar si se ve en campo). */
+    esp_timer_start_once(s_response_timeout_timer, COMMAND_TIMEOUT_MS * 1000ULL);
+    /* El mutex se libera en dos lugares posibles ahora: BLE_GAP_EVENT_NOTIFY_RX
+     * si llega respuesta a tiempo (que además cancela este timer), o
+     * on_response_timeout si no llega — así un comando perdido no deja el
+     * driver trabado para siempre. */
     return ESP_OK;
 }
 

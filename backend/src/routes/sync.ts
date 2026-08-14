@@ -1,25 +1,10 @@
 import { Router } from "express";
-import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { syncPayloadSchema } from "../validation.js";
 
 export const syncRouter = Router();
 syncRouter.use(requireAuth);
-
-// Contrato esperado del firmware, ver docs/api-contract.md.
-const tripSchema = z.object({
-  started_at: z.string().datetime(),
-  ended_at: z.string().datetime(),
-  distance_km: z.number().nonnegative().optional(),
-  avg_consumption: z.number().nonnegative().nullable().optional(), // null si el vehículo no expone flujo de combustible
-  max_rpm: z.number().int().nonnegative().optional(),
-  dtc_codes: z.array(z.string()).optional(),
-});
-
-const syncPayloadSchema = z.object({
-  device_uid: z.string().min(4),
-  trips: z.array(tripSchema),
-});
 
 syncRouter.post("/trips", async (req: AuthedRequest, res) => {
   const parsed = syncPayloadSchema.safeParse(req.body);
@@ -88,6 +73,19 @@ syncRouter.get("/trips", async (req: AuthedRequest, res) => {
      ORDER BY t.started_at DESC
      LIMIT 100`,
     [req.userId]
+  );
+  return res.json(result.rows);
+});
+
+/** Códigos DTC de un viaje puntual (para la pantalla de diagnóstico). */
+syncRouter.get("/trips/:id/dtc", async (req: AuthedRequest, res) => {
+  const result = await pool.query(
+    `SELECT dc.code, dc.description, dc.created_at
+     FROM dtc_codes dc
+     JOIN trips t ON t.id = dc.trip_id
+     JOIN devices d ON d.id = t.device_id
+     WHERE t.id = $1 AND d.user_id = $2`,
+    [req.params.id, req.userId]
   );
   return res.json(result.rows);
 });

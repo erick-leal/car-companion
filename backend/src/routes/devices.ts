@@ -1,15 +1,10 @@
 import { Router } from "express";
-import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { registerDeviceSchema } from "../validation.js";
 
 export const devicesRouter = Router();
 devicesRouter.use(requireAuth);
-
-const registerDeviceSchema = z.object({
-  device_uid: z.string().min(4), // ej. la MAC del ESP32
-  name: z.string().min(1).optional(),
-});
 
 /** Emparejar un dispositivo físico con el usuario autenticado. */
 devicesRouter.post("/", async (req: AuthedRequest, res) => {
@@ -43,4 +38,16 @@ devicesRouter.get("/", async (req: AuthedRequest, res) => {
     [req.userId]
   );
   return res.json(result.rows);
+});
+
+/** Desemparejar un dispositivo (ej. si vendés el auto o cambiás de adaptador). */
+devicesRouter.delete("/:id", async (req: AuthedRequest, res) => {
+  const result = await pool.query(
+    "DELETE FROM devices WHERE id = $1 AND user_id = $2 RETURNING id",
+    [req.params.id, req.userId]
+  );
+  if (result.rowCount === 0) {
+    return res.status(404).json({ error: "dispositivo no encontrado" });
+  }
+  return res.status(204).send();
 });

@@ -73,8 +73,11 @@ para otro vehículo sin tocar una sola pantalla.
   `.github/workflows/firmware-host-tests.yml`).
 - ⚠️ `obd_driver` — implementado con NimBLE (escaneo, conexión, descubrimiento
   de servicio/característica, suscripción a notificaciones, envío de comandos
-  ELM327). **No compilado ni probado contra hardware real todavía.** Antes de
-  flashear, hay que:
+  ELM327). Revisado y endurecido (14 ago): se corrigió un bug de falsos
+  errores en el descubrimiento de servicios, y se agregó un timeout real por
+  comando (antes, si el adaptador no respondía, el driver quedaba trabado
+  para siempre — ahora se recupera solo a los 3s). **Sigue sin compilar ni
+  probar contra hardware real todavía.** Antes de flashear, hay que:
   1. Confirmar los UUIDs BLE reales del Vgate vLinker MC+ con la app nRF Connect
      (instrucciones en `components/obd_driver/include/obd_driver_config.h`).
   2. Compilar con `idf.py build` (requiere tener ESP-IDF instalado, ver setup arriba)

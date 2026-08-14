@@ -1,15 +1,10 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { signToken } from "../middleware/auth.js";
+import { credentialsSchema } from "../validation.js";
 
 export const authRouter = Router();
-
-const credentialsSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8, "la contraseña debe tener al menos 8 caracteres"),
-});
 
 authRouter.post("/register", async (req, res) => {
   const parsed = credentialsSchema.safeParse(req.body);

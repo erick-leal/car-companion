@@ -12,11 +12,11 @@
   - [ ] `ui`: pantalla principal básica en LVGL
   - [ ] Probar en el Maxus T60 real, mapear PIDs propietarios (ver `pid-mapping.md`, por crear)
 
-- [ ] **Fase 2 — MVP completo**
-  - [ ] Todas las pantallas del MVP (viaje, DTC, diagnóstico, historial)
-  - [ ] Migrar a Sunton CYD
-  - [ ] Backend mínimo (auth + sync)
-  - [ ] OTA básico funcionando
+- [x] **Fase 2 — MVP completo (backend)**
+  - [ ] Todas las pantallas del MVP (viaje, DTC, diagnóstico, historial) — pendiente, es firmware
+  - [ ] Migrar a Sunton CYD — pendiente, depende del hardware
+  - [x] Backend mínimo (auth + sync) — desplegado en Railway, probado end-to-end
+  - [ ] OTA básico funcionando — el endpoint existe (`/firmware/latest`), falta lógica en el firmware
 
 - [ ] **Fase 3 — Validación con usuarios reales**
   - [ ] 5–10 unidades a beta testers
@@ -34,6 +34,17 @@
 
 ## Estado actual
 
-**Fase 0, en progreso.** Repositorio inicializado, estructura del monorepo lista,
-firmware con esqueleto de componentes (todo en TODO). Siguiente paso: comprar/activar
-el M5Stack CoreS3 y hacer el primer `obd_driver_init()` real contra el Vgate.
+**Backend en producción, firmware pendiente de hardware.** El backend
+(Node/TS/Postgres) está desplegado en Railway y probado de punta a punta:
+login, emparejamiento de dispositivo, sync de viajes con DTC, y consulta de
+historial — todo contra la base de datos real, no un mock. URL:
+https://car-companion-production.up.railway.app
+
+El firmware tiene `state_store` y `pid_engine` implementados y testeados
+(sin hardware), y `obd_driver` (BLE/NimBLE) escrito pero sin compilar ni
+probar todavía — depende de que llegue el M5Stack CoreS3 y se confirmen los
+UUIDs BLE del Vgate vLinker MC+.
+
+Hay una maqueta visual (no funcional) de la pantalla principal en
+`docs/mockups/main-screen-mockup.html`, como referencia de diseño para
+cuando se escriba la UI real en LVGL.

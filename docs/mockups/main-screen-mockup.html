@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Car Companion — Maqueta pantalla principal</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;600;800&display=swap');
+
+  :root {
+    --bg-room: #05060a;
+    --bezel: #14171c;
+    --screen: #0a0d11;
+    --grid: #1a2028;
+    --text: #eef1f5;
+    --dim: #5c6774;
+    --cyan: #33d6c4;
+    --amber: #f5a623;
+    --redline: #ff5a4e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-room);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  .rig {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .bezel {
+    background: var(--bezel);
+    border-radius: 18px;
+    padding: 16px;
+    box-shadow: 0 30px 80px -20px rgba(0,0,0,0.8), inset 0 0 0 1px #22262d;
+  }
+  .screen {
+    width: 560px;
+    aspect-ratio: 480 / 320;
+    background: var(--screen);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+    background-image:
+      radial-gradient(ellipse at 50% 0%, #10151b 0%, var(--screen) 60%);
+  }
+  .screen::after {
+    /* leve viñeta de vidrio, como una pantalla real */
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(255,255,255,0.04), transparent 30%);
+    pointer-events: none;
+  }
+
+  .layout {
+    position: relative;
+    height: 100%;
+    display: grid;
+    grid-template-rows: 34px 1fr 46px;
+    padding: 14px 22px;
+    gap: 6px;
+  }
+
+  /* --- barra superior --- */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--dim);
+    border-bottom: 1px solid var(--grid);
+    padding-bottom: 8px;
+  }
+  .cel {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--amber);
+  }
+  .cel-icon {
+    width: 14px; height: 12px;
+    position: relative;
+  }
+  .cel-icon svg { width: 100%; height: 100%; fill: var(--amber); filter: drop-shadow(0 0 4px rgba(245,166,35,0.7)); }
+
+  /* --- fila central: tacómetro + velocidad + boost --- */
+  .center-row {
+    display: grid;
+    grid-template-columns: 118px 1fr 118px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .arc-wrap { position: relative; width: 118px; height: 118px; }
+  .arc-wrap svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .arc-bg { fill: none; stroke: var(--grid); stroke-width: 8; }
+  .arc-fg { fill: none; stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset 0.4s ease; }
+  .arc-center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .arc-val { font-family: 'Share Tech Mono', monospace; font-size: 22px; font-weight: 400; }
+  .arc-lbl { font-size: 9px; letter-spacing: 1.5px; color: var(--dim); text-transform: uppercase; margin-top: 2px; }
+
+  .speed-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .speed-num {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 84px;
+    line-height: 0.9;
+    color: var(--text);
+    text-shadow: 0 0 24px rgba(51,214,196,0.25);
+  }
+  .speed-unit {
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--dim);
+    margin-top: 6px;
+  }
+
+  .rpm-track {
+    width: 220px;
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .rpm-ticks {
+    display: flex;
+    justify-content: space-between;
+  }
+  .tick {
+    width: 3px; height: 14px;
+    background: var(--grid);
+    border-radius: 1px;
+  }
+  .tick.lit { background: var(--cyan); }
+  .tick.redline { background: var(--redline); }
+  .rpm-num-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .rpm-num-row .rpm-big { font-size: 15px; color: var(--text); }
+  .rpm-num-row .rpm-max { font-size: 10px; color: var(--dim); }
+
+  /* --- footer de métricas secundarias --- */
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    border-top: 1px solid var(--grid);
+    padding-top: 8px;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .metric .v { font-size: 15px; color: var(--text); }
+  .metric .l { font-size: 8px; letter-spacing: 1.2px; color: var(--dim); text-transform: uppercase; }
+
+  .caption {
+    max-width: 560px;
+    text-align: center;
+    color: #7d8794;
+    font-size: 12.5px;
+    line-height: 1.6;
+    font-family: 'Inter', sans-serif;
+  }
+  .caption b { color: #a8b1bd; }
+</style>
+</head>
+<body>
+  <div class="rig">
+    <div class="bezel">
+      <div class="screen">
+        <div class="layout">
+
+          <div class="topbar">
+            <span>CAR COMPANION · MAXUS T60 DIESEL</span>
+            <div class="cel">
+              <span class="cel-icon">
+                <svg viewBox="0 0 24 20"><path d="M12 0 L24 20 L0 20 Z"/></svg>
+              </span>
+              <span>CHECK ENGINE</span>
+            </div>
+          </div>
+
+          <div class="center-row">
+
+            <!-- Temp refrigerante -->
+            <div class="arc-wrap">
+              <svg viewBox="0 0 100 100">
+                <circle class="arc-bg" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="66"/>
+                <circle class="arc-fg" cx="50" cy="50" r="42" stroke="#33d6c4"
+                        stroke-dasharray="264" stroke-dashoffset="140"/>
+              </svg>
+              <div class="arc-center">
+                <div class="arc-val">89°</div>
+                <div class="arc-lbl">Coolant</div>
+              </div>
+            </div>
+
+            <!-- Velocidad + RPM -->
+            <div class="speed-col">
+              <div class="speed-num">87</div>
+              <div class="speed-unit">KM / H</div>
+
+              <div class="rpm-track">
+                <div class="rpm-ticks" id="ticks"></div>
+                <div class="rpm-num-row">
+                  <span class="rpm-big">2 450 <span style="color:var(--dim); font-size:10px;">RPM</span></span>
+                  <span class="rpm-max">6000</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Boost -->
+            <div class="arc-wrap">
+              <svg viewBox="0 0 100 100">
+                <circle class="arc-bg" cx="50" cy="50" r="42" stroke-dasharray="264" stroke-dashoffset="66"/>
+                <circle class="arc-fg" cx="50" cy="50" r="42" stroke="#f5a623"
+                        stroke-dasharray="264" stroke-dashoffset="180"/>
+              </svg>
+              <div class="arc-center">
+                <div class="arc-val">0.6</div>
+                <div class="arc-lbl">Boost bar</div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="footer">
+            <div class="metric"><span class="v">13.8V</span><span class="l">Batería</span></div>
+            <div class="metric"><span class="v">62%</span><span class="l">Carga motor</span></div>
+            <div class="metric"><span class="v">34°C</span><span class="l">Aire admisión</span></div>
+            <div class="metric"><span class="v">32.5 km</span><span class="l">Viaje actual</span></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <p class="caption">
+      <b>Maqueta de diseño</b> — pantalla principal, proporción 480×320 (Sunton CYD 3.5").<br>
+      Esto es un mockup en HTML para acordar el diseño, <b>no es LVGL corriendo de verdad</b>.
+      Los valores están fijos (no vienen de ningún sensor). El siguiente paso real es
+      escribir esta pantalla en LVGL (componente <code>ui</code> del firmware) y probarla
+      en el simulador oficial de LVGL en <code>sim.lvgl.io</code> antes de tocar hardware.
+    </p>
+  </div>
+
+<script>
+  // Genera las marcas del tacómetro (18 ticks, las últimas 3 en zona roja)
+  const ticksEl = document.getElementById('ticks');
+  const total = 18;
+  const litUpTo = 7;      // ~2450 rpm de 6000 -> ~7 de 18 encendidos
+  const redlineFrom = 15; // últimas 3 marcas = zona roja
+  for (let i = 0; i < total; i++) {
+    const t = document.createElement('div');
+    t.className = 'tick' + (i < litUpTo ? ' lit' : (i >= redlineFrom ? ' redline' : ''));
+    ticksEl.appendChild(t);
+  }
+</script>
+</body>
+</html>

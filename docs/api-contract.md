@@ -17,6 +17,12 @@ Registro de usuario dueño del dispositivo.
 ### `POST /api/v1/auth/login`
 Devuelve token de sesión.
 
+### `GET /api/v1/devices`
+Lista los dispositivos emparejados del usuario autenticado.
+
+### `DELETE /api/v1/devices/:id`
+Desemparejar un dispositivo (ej. se vendió el auto, se cambió de adaptador).
+
 ### `POST /api/v1/sync/trips`
 El firmware sube el historial de viajes acumulado offline.
 
@@ -46,6 +52,9 @@ El firmware consulta si hay una versión nueva antes de aplicar OTA.
   "sha256": "..."
 }
 ```
+
+### `GET /api/v1/sync/trips/:id/dtc`
+Códigos de falla (DTC) de un viaje puntual — para la pantalla de diagnóstico.
 
 ## Pendiente de definir
 
