@@ -62,9 +62,39 @@ obd_driver → pid_engine → state_store → ui
 Esto es lo que te permite, más adelante, cambiar de adaptador OBD o agregar soporte
 para otro vehículo sin tocar una sola pantalla.
 
+## Estado actual (Fase 1 en progreso)
+
+- ✅ `state_store` — implementado (mutex, setters, suscriptores).
+- ✅ `pid_engine` — parseo real de PIDs estándar (RPM, velocidad, temp, carga,
+  temp admisión, MAP/boost aproximado, voltaje). Lógica de conversión aislada
+  en `pid_math.c/h` sin dependencias de ESP-IDF, testeada en
+  `host_tests/test_pid_math.c` (corre con `gcc` normal, sin hardware — ver
+  ese archivo para el comando exacto, y el workflow de CI en
+  `.github/workflows/firmware-host-tests.yml`).
+- ⚠️ `obd_driver` — implementado con NimBLE (escaneo, conexión, descubrimiento
+  de servicio/característica, suscripción a notificaciones, envío de comandos
+  ELM327). **No compilado ni probado contra hardware real todavía.** Antes de
+  flashear, hay que:
+  1. Confirmar los UUIDs BLE reales del Vgate vLinker MC+ con la app nRF Connect
+     (instrucciones en `components/obd_driver/include/obd_driver_config.h`).
+  2. Compilar con `idf.py build` (requiere tener ESP-IDF instalado, ver setup arriba)
+     y corregir lo que el compilador marque — es código escrito a mano contra la
+     API de NimBLE, sin haber pasado por el toolchain real todavía.
+- ❌ `ui` — sigue en stub. Es el siguiente paso lógico una vez que `obd_driver`
+  esté conectando de verdad (para ver los datos en pantalla, no solo por log).
+- ❌ `connectivity` / `storage` (contenido real) — quedan para Fase 2.
+
 ## Próximo paso concreto
 
-1. Implementar en `obd_driver` el emparejamiento BLE con el Vgate vLinker MC+ y el envío
-   de comandos AT básicos (`ATZ`, `ATE0`, `0100`) para confirmar el protocolo detectado.
-2. Loguear por UART las respuestas crudas mientras conduces el Maxus T60, para empezar
-   a mapear qué PIDs estándar responde y cuáles no (ver `docs/pid-mapping.md`).
+1. Instalar ESP-IDF y correr `idf.py build` — vas a encontrar errores de
+   compilación reales en `obd_driver.c` (es la parte más compleja y menos
+   probada de todo el firmware). Es normal y esperado; son buenos primeros
+   errores para aprender ESP-IDF/NimBLE.
+2. En paralelo, sin esperar a resolver BLE: correr los tests de `pid_math`
+   (`cd host_tests && gcc ...`) para confirmar que las fórmulas de conversión
+   están bien — eso ya está verificado y no cambia aunque BLE tarde en andar.
+3. Confirmar los UUIDs del Vgate con nRF Connect (ver `obd_driver_config.h`).
+4. Flashear al CoreS3 y mirar `idf.py monitor` mientras conduces el Maxus T60,
+   para ver qué PIDs responde de verdad (algunos, como boost real, probablemente
+   no estén en el estándar — ver `docs/pid-mapping.md`, por crear con los
+   resultados de esa prueba).

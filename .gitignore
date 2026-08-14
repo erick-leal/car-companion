@@ -31,3 +31,5 @@ mobile-app/*.jks
 hardware/**/*-backups/
 hardware/**/*.bak
 hardware/**/fp-info-cache
+firmware/host_tests/test_pid_math
+*.o

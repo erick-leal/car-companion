@@ -1,0 +1,23 @@
+name: firmware host tests
+
+on:
+  push:
+    paths:
+      - "firmware/components/pid_engine/**"
+      - "firmware/host_tests/**"
+  pull_request:
+    paths:
+      - "firmware/components/pid_engine/**"
+      - "firmware/host_tests/**"
+
+jobs:
+  test-pid-math:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run pid_math host tests
+        run: |
+          cd firmware/host_tests
+          gcc -Wall -Werror -I../components/pid_engine/include \
+              -o test_pid_math test_pid_math.c ../components/pid_engine/pid_math.c -lm
+          ./test_pid_math
