@@ -17,6 +17,13 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 
-# PSRAM: el CoreS3 lo trae (8MB), lo activamos por si LVGL lo necesita para buffers.
+# PSRAM: la placa de prototipo actual (M5Stack Core2, módulo D0WDQ6-V3) trae 8MB,
+# lo activamos por si LVGL lo necesita para buffers. Modo quad porque el ESP32
+# clásico (a diferencia del S3) no soporta PSRAM en modo octal.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
+
+# Flash real del Core2: 16MB (el default de ESP-IDF es 2MB y generaba un warning
+# de tamaño en cada boot — ver log de flasheo del 19 ago).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"

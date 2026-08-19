@@ -5,7 +5,10 @@ y los muestra en una pantalla dedicada, con app móvil y backend propio.
 
 > Estado: **prototipo temprano**. Vehículo de desarrollo: Maxus T60 2021 Diesel.
 > Adaptador OBD de referencia: Vgate vLinker MC+ (BLE).
-> Placa de prototipo: M5Stack CoreS3 (ESP32-S3).
+> Placa de prototipo actual: M5Stack Core2 (ESP32 clásico, módulo D0WDQ6-V3,
+> 16MB flash, 8MB PSRAM) — se pidió un CoreS3 (ESP32-S3) pero llegó un Core2;
+> se decidió seguir con este para no bloquear la validación de `obd_driver`
+> (ver `docs/roadmap.md`).
 
 Ver el análisis completo de producto y arquitectura en [`docs/architecture.md`](docs/architecture.md)
 y la hoja de ruta en [`docs/roadmap.md`](docs/roadmap.md).

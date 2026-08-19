@@ -3,7 +3,9 @@
 - [ ] **Fase 0 — Setup y aprendizaje base**
   - [ ] Fundamentos de C/C++ embebido y ESP-IDF
   - [x] Adaptador OBD comprado (Vgate vLinker MC+)
-  - [ ] M5Stack CoreS3 comprado
+  - [x] M5Stack comprado — llegó un **Core2** (ESP32 clásico) en vez del CoreS3
+    (ESP32-S3) planeado; se decidió seguir con el Core2 para no bloquear
+    Fase 1, ver "Estado actual" abajo
   - [ ] Cable OBD-II de extensión para banco de pruebas
 
 - [ ] **Fase 1 — Prototipo funcional**
@@ -41,9 +43,11 @@ historial — todo contra la base de datos real, no un mock. URL:
 https://car-companion-production.up.railway.app
 
 El firmware tiene `state_store` y `pid_engine` implementados y testeados
-(sin hardware), y `obd_driver` (BLE/NimBLE) escrito pero sin compilar ni
-probar todavía — depende de que llegue el M5Stack CoreS3 y se confirmen los
-UUIDs BLE del Vgate vLinker MC+.
+(sin hardware). `obd_driver` (BLE/NimBLE) ya compila y corre en hardware
+real (Core2, target `esp32`): bootea sin panics, inicializa BLE y escanea
+buscando el Vgate por nombre (probado el 19 ago). Falta confirmar los UUIDs
+reales de servicio/característica del vLinker MC+ con nRF Connect (los del
+código son placeholders) y probar la conexión completa en el Maxus T60.
 
 Hay una maqueta visual (no funcional) de la pantalla principal en
 `docs/mockups/main-screen-mockup.html`, como referencia de diseño para

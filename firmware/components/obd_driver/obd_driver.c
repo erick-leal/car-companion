@@ -10,7 +10,7 @@
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
-#include "host/ble_gattc.h"
+#include "host/ble_gatt.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "esp_timer.h"
@@ -41,6 +41,12 @@ static void *s_pending_ctx = NULL;
 #define COMMAND_TIMEOUT_MS 3000
 static esp_timer_handle_t s_response_timeout_timer;
 
+/* Buffer de acumulacion de respuesta: el ELM327 puede mandar la respuesta en
+ * varios paquetes BLE (notify), termina con el prompt '>' cuando esta completa. */
+#define RESPONSE_BUF_SIZE 256
+static uint8_t s_response_buf[RESPONSE_BUF_SIZE];
+static size_t s_response_len = 0;
+
 static void on_response_timeout(void *arg)
 {
     ESP_LOGW(TAG, "timeout esperando respuesta OBD, liberando turno para el siguiente comando");
@@ -49,12 +55,6 @@ static void on_response_timeout(void *arg)
     s_response_len = 0;
     xSemaphoreGive(s_cmd_mutex);
 }
-
-/* Buffer de acumulacion de respuesta: el ELM327 puede mandar la respuesta en
- * varios paquetes BLE (notify), termina con el prompt '>' cuando esta completa. */
-#define RESPONSE_BUF_SIZE 256
-static uint8_t s_response_buf[RESPONSE_BUF_SIZE];
-static size_t s_response_len = 0;
 
 static void start_scan(void);
 static void obd_send_init_sequence(void);
