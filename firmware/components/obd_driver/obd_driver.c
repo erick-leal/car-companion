@@ -165,20 +165,48 @@ static void obd_write_raw(const char *cmd)
     ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_char_handle, buf, n);
 }
 
+/* ATZ (reset), ATE0 (echo off — clave, si no el ELM327 nos devuelve el
+ * comando que mandamos antes de la respuesta real), ATL0 (sin saltos de
+ * linea extra), ATSP0 (autodetectar protocolo del vehiculo). */
+static const char *const s_init_cmds[] = { "ATZ", "ATE0", "ATL0", "ATSP0" };
+#define INIT_CMD_COUNT (sizeof(s_init_cmds) / sizeof(s_init_cmds[0]))
+static size_t s_init_step;
+
+static void send_next_init_step(void);
+
+static void on_init_step_response(const uint8_t *data, size_t len, void *ctx)
+{
+    /* No usamos la respuesta en si (solo confirma que el comando anterior
+     * fue procesado) antes de mandar el siguiente — evita que las 4
+     * respuestas del init se pisen entre si o con el primer poll de PIDs
+     * de pid_engine, que arranca apenas obd_driver_is_connected() da true. */
+    s_init_step++;
+    send_next_init_step();
+}
+
+static void send_next_init_step(void)
+{
+    if (s_init_step >= INIT_CMD_COUNT) {
+        s_ready = true; // recien ahora: las 4 respuestas de init ya llegaron
+        ESP_LOGI(TAG, "secuencia de init ELM327 completa, listo para PIDs");
+        return;
+    }
+    /* Reusamos el mismo canal de "respuesta pendiente" que obd_driver_send_command,
+     * pero sin tomar s_cmd_mutex: en este punto s_ready todavia es false, asi que
+     * obd_driver_is_connected() da false y pid_engine no puede llamar a
+     * obd_driver_send_command todavia (esa funcion chequea is_connected antes de
+     * tocar el mutex) — no hay con quien pisarse. */
+    s_pending_cb = on_init_step_response;
+    s_pending_ctx = NULL;
+    obd_write_raw(s_init_cmds[s_init_step]);
+    esp_timer_start_once(s_response_timeout_timer, COMMAND_TIMEOUT_MS * 1000ULL);
+}
+
 static void obd_send_init_sequence(void)
 {
-    /* ATZ (reset), ATE0 (echo off — clave, si no el ELM327 nos devuelve el
-     * comando que mandamos antes de la respuesta real), ATL0 (sin saltos de
-     * linea extra), ATSP0 (autodetectar protocolo del vehiculo). */
     ESP_LOGI(TAG, "enviando secuencia de init ELM327...");
-    obd_write_raw("ATZ");
-    // TODO: hay que esperar la respuesta de cada AT antes de mandar el
-    // siguiente (mismo mecanismo de "un comando en vuelo" que send_command).
-    // Simplificado por ahora; si en hardware real se pisan, encolar con delay.
-    obd_write_raw("ATE0");
-    obd_write_raw("ATL0");
-    obd_write_raw("ATSP0");
-    s_ready = true; // optimista; ver TODO arriba para hacerlo robusto de verdad
+    s_init_step = 0;
+    send_next_init_step();
 }
 
 /* ---------------------------------------------------------------------
@@ -189,12 +217,27 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
         case BLE_GAP_EVENT_DISC: {
-            /* Filtramos por nombre del dispositivo anunciado. */
+            /* Filtramos principalmente por el UUID de servicio 0x18F0 (confirmado
+             * en el auto con nRF Connect el 19 ago): el vLinker MC+ no manda su
+             * nombre en el advertising/scan-response, solo se lee por GATT
+             * despues de conectar (asi lo mostraba nRF Connect) — matchear por
+             * nombre solo no encontraba nunca el adaptador. Se deja el chequeo
+             * por nombre como fallback por si algun otro adaptador OBD si lo
+             * anuncia. */
             struct ble_hs_adv_fields fields;
             ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data);
 
-            if (fields.name != NULL &&
-                strncmp((char *)fields.name, OBD_BLE_DEVICE_NAME, strlen(OBD_BLE_DEVICE_NAME)) == 0) {
+            bool matched_by_uuid = false;
+            for (int i = 0; i < fields.num_uuids16; i++) {
+                if (fields.uuids16[i].value == OBD_BLE_SERVICE_UUID) {
+                    matched_by_uuid = true;
+                    break;
+                }
+            }
+            bool matched_by_name = fields.name != NULL &&
+                strncmp((char *)fields.name, OBD_BLE_DEVICE_NAME, strlen(OBD_BLE_DEVICE_NAME)) == 0;
+
+            if (matched_by_uuid || matched_by_name) {
                 ESP_LOGI(TAG, "encontrado adaptador OBD, conectando...");
                 ble_gap_disc_cancel();
                 ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 5000, NULL,
@@ -253,9 +296,16 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             if (s_response_len > 0 && s_response_buf[s_response_len - 1] == '>') {
                 esp_timer_stop(s_response_timeout_timer); // llegó a tiempo, cancelar el watchdog
                 if (s_pending_cb != NULL) {
-                    s_pending_cb(s_response_buf, s_response_len, s_pending_ctx);
+                    /* Limpiar los globales ANTES de invocar el callback: si es
+                     * on_init_step_response, dispara el siguiente paso del init
+                     * y vuelve a setear s_pending_cb desde adentro — si lo
+                     * limpiaramos despues, pisariamos ese nuevo valor y la
+                     * cadena de init se cortaria en el primer paso. */
+                    obd_response_cb_t cb = s_pending_cb;
+                    void *ctx = s_pending_ctx;
                     s_pending_cb = NULL;
                     s_pending_ctx = NULL;
+                    cb(s_response_buf, s_response_len, ctx);
                     xSemaphoreGive(s_cmd_mutex);
                 }
                 s_response_len = 0;
@@ -274,7 +324,11 @@ static void start_scan(void)
     disc_params.passive = 0;
     disc_params.itvl = 0;
     disc_params.window = 0;
-    disc_params.filter_duplicates = 1;
+    /* En 0 a proposito: el vLinker manda su UUID de servicio (lo que
+     * usamos para matchear) en un paquete que el controlador puede tratar
+     * como "duplicado" del mismo address si se filtra — con filtro en 1 el
+     * adaptador nunca se encontraba en las pruebas reales del 19 ago. */
+    disc_params.filter_duplicates = 0;
 
     int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &disc_params,
                            gap_event_handler, NULL);
@@ -304,10 +358,18 @@ static void nimble_host_task(void *param)
 
 esp_err_t obd_driver_init(void)
 {
-    s_cmd_mutex = xSemaphoreCreateMutex();
+    /* Semaforo BINARIO, no mutex: se toma en la tarea que llama a
+     * obd_driver_send_command pero se libera desde la tarea de NimBLE (al
+     * llegar la respuesta por notify) o desde el timer de timeout — un mutex
+     * real de FreeRTOS trackea el dueño para priority inheritance y explota
+     * (assert xTaskPriorityDisinherit) si se libera desde otra tarea o sin
+     * haberse tomado antes. Visto en hardware real el 19 ago al recibir la
+     * primera respuesta del vLinker. */
+    s_cmd_mutex = xSemaphoreCreateBinary();
     if (s_cmd_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    xSemaphoreGive(s_cmd_mutex); // arranca "disponible" (a diferencia de un mutex, el binario arranca tomado)
 
     const esp_timer_create_args_t timer_args = {
         .callback = &on_response_timeout,
@@ -329,8 +391,8 @@ esp_err_t obd_driver_init(void)
 
     nimble_port_freertos_init(nimble_host_task);
 
-    ESP_LOGI(TAG, "obd_driver_init OK — UUIDs configurados en obd_driver_config.h "
-                   "(CONFIRMAR contra el adaptador real con nRF Connect)");
+    ESP_LOGI(TAG, "obd_driver_init OK — UUIDs confirmados contra el vLinker MC+ "
+                   "(servicio 18F0/notify 2AF0/write 2AF1)");
     return ESP_OK;
 }
 

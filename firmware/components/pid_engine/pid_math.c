@@ -51,6 +51,26 @@ uint8_t pid_math_map_kpa(uint8_t a)
     return a;
 }
 
+uint8_t pid_math_throttle_pct(uint8_t a)
+{
+    return (uint8_t)(((uint32_t)a * 100) / 255);
+}
+
+uint32_t pid_math_fuel_rail_pressure_kpa(uint8_t a, uint8_t b)
+{
+    return 10u * ((uint32_t)a * 256 + b);
+}
+
+float pid_math_fuel_rate_lph(uint8_t a, uint8_t b)
+{
+    return ((float)a * 256 + b) / 20.0f;
+}
+
+int pid_math_mil_on(uint8_t a)
+{
+    return (a & 0x80) != 0;
+}
+
 int pid_math_parse_atrv(const char *text, float *out_volts)
 {
     char *endptr = NULL;

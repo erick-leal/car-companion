@@ -9,8 +9,9 @@
 
 esp_err_t ui_init(void);
 
-/** Pantallas del MVP — cada una vive en su propio .c dentro de screens/ (por crear). */
+/** Pantallas del MVP. La navegacion entre ellas es tactil (menu). */
 void ui_show_main_screen(void);
+void ui_show_menu_screen(void);
 void ui_show_trip_stats_screen(void);
 void ui_show_dtc_screen(void);
 void ui_show_diagnostics_screen(void);

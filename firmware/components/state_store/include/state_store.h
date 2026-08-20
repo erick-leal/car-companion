@@ -24,10 +24,15 @@ typedef struct {
     uint8_t  speed_kmh;
     int16_t  coolant_temp_c;
     float    battery_voltage;
-    int16_t  boost_pressure_kpa;   // INT16_MIN si no soportado por el vehiculo
+    int16_t  boost_pressure_kpa;   // MAP - barometrica (boost real); INT16_MIN si no soportado
     uint8_t  engine_load_pct;
     int16_t  intake_air_temp_c;
     bool     check_engine_on;
+    uint8_t  throttle_pct;
+    uint32_t fuel_rail_pressure_kpa; // common-rail diesel; 0 si no soportado/aun no leido
+    float    fuel_rate_lph;
+    int16_t  ambient_air_temp_c;
+    uint8_t  barometric_pressure_kpa;
     bool     data_valid;           // false hasta la primera lectura real del OBD
     int64_t  last_update_us;       // esp_timer_get_time() del ultimo cambio, para detectar "datos viejos"
 } vehicle_state_t;
@@ -48,6 +53,11 @@ esp_err_t state_store_set_boost_pressure(int16_t kpa);
 esp_err_t state_store_set_engine_load(uint8_t load_pct);
 esp_err_t state_store_set_intake_air_temp(int16_t temp_c);
 esp_err_t state_store_set_check_engine(bool on);
+esp_err_t state_store_set_throttle(uint8_t pct);
+esp_err_t state_store_set_fuel_rail_pressure(uint32_t kpa);
+esp_err_t state_store_set_fuel_rate(float lph);
+esp_err_t state_store_set_ambient_air_temp(int16_t temp_c);
+esp_err_t state_store_set_barometric_pressure(uint8_t kpa);
 
 /** Usado por ui para redibujar cuando cambian los datos. Maximo STATE_STORE_MAX_SUBSCRIBERS. */
 esp_err_t state_store_subscribe(state_change_cb_t cb, void *ctx);

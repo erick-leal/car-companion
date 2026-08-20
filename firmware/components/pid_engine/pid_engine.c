@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <stdbool.h>
 
 static const char *TAG = "pid_engine";
 
@@ -18,10 +19,28 @@ static const standard_pid_t s_poll_list[] = {
     PID_ENGINE_LOAD,
     PID_INTAKE_AIR_TEMP,
     PID_INTAKE_MAP,
+    PID_MONITOR_STATUS,
+    PID_THROTTLE_POS,
+    PID_FUEL_RAIL_PRESSURE,
+    PID_BAROMETRIC_PRESSURE,
+    PID_AMBIENT_AIR_TEMP,
+    PID_FUEL_RATE,
 };
 #define POLL_LIST_LEN (sizeof(s_poll_list) / sizeof(s_poll_list[0]))
 
 static TaskHandle_t s_poll_task_handle;
+
+/* El boost real no es un PID unico: es MAP - presion barometrica local. Se
+ * recalcula cada vez que llega cualquiera de los dos, con la barometrica
+ * arrancando en un valor de atmosfera estandar hasta la primer lectura real
+ * (mejor esa aproximacion que dejar el boost en 0/invalido mientras tanto). */
+static uint8_t s_last_map_kpa;
+static uint8_t s_last_baro_kpa = 101;
+
+static void update_boost_estimate(void)
+{
+    state_store_set_boost_pressure((int16_t)s_last_map_kpa - (int16_t)s_last_baro_kpa);
+}
 
 esp_err_t pid_engine_init(void)
 {
@@ -55,13 +74,44 @@ esp_err_t pid_engine_parse_mode01_response(uint8_t pid, const uint8_t *data_byte
             return state_store_set_intake_air_temp(pid_math_temp_c(data_bytes[0]));
 
         case PID_INTAKE_MAP:
-            /* MAP absoluto en kPa, NO es "presion de boost" directamente:
-             * boost real = MAP - presion atmosferica local. Ademas, en el
-             * motor diesel turbo del T60 es probable que este PID estandar
-             * no refleje bien el boost real y haga falta un PID propietario
-             * (ver docs/pid-mapping.md). Se guarda igual como aproximacion. */
+            /* MAP absoluto en kPa. El boost real (MAP - barometrica) se
+             * recalcula en update_boost_estimate() combinando esto con
+             * PID_BAROMETRIC_PRESSURE — en el motor diesel turbo del T60 es
+             * probable que igual no refleje el boost real del turbo y haga
+             * falta un PID propietario (ver docs/pid-mapping.md), pero ya es
+             * mejor aproximacion que el MAP crudo sin compensar. */
             if (len < 1) return ESP_ERR_INVALID_SIZE;
-            return state_store_set_boost_pressure((int16_t)pid_math_map_kpa(data_bytes[0]));
+            s_last_map_kpa = pid_math_map_kpa(data_bytes[0]);
+            update_boost_estimate();
+            return ESP_OK;
+
+        case PID_BAROMETRIC_PRESSURE:
+            if (len < 1) return ESP_ERR_INVALID_SIZE;
+            s_last_baro_kpa = pid_math_map_kpa(data_bytes[0]);
+            state_store_set_barometric_pressure(s_last_baro_kpa);
+            update_boost_estimate();
+            return ESP_OK;
+
+        case PID_MONITOR_STATUS:
+            if (len < 1) return ESP_ERR_INVALID_SIZE;
+            return state_store_set_check_engine(pid_math_mil_on(data_bytes[0]));
+
+        case PID_THROTTLE_POS:
+            if (len < 1) return ESP_ERR_INVALID_SIZE;
+            return state_store_set_throttle(pid_math_throttle_pct(data_bytes[0]));
+
+        case PID_AMBIENT_AIR_TEMP:
+            if (len < 1) return ESP_ERR_INVALID_SIZE;
+            return state_store_set_ambient_air_temp(pid_math_temp_c(data_bytes[0]));
+
+        case PID_FUEL_RAIL_PRESSURE:
+            if (len < 2) return ESP_ERR_INVALID_SIZE;
+            return state_store_set_fuel_rail_pressure(
+                pid_math_fuel_rail_pressure_kpa(data_bytes[0], data_bytes[1]));
+
+        case PID_FUEL_RATE:
+            if (len < 2) return ESP_ERR_INVALID_SIZE;
+            return state_store_set_fuel_rate(pid_math_fuel_rate_lph(data_bytes[0], data_bytes[1]));
 
         default:
             ESP_LOGW(TAG, "PID 0x%02X sin formula de parseo implementada", pid);
@@ -113,12 +163,47 @@ static void handle_atrv_response(const uint8_t *raw, size_t raw_len, void *ctx)
     pid_engine_parse_atrv_response(text);
 }
 
+/* DEBUG temporal: descubrir que PIDs estandar soporta realmente esta ECU
+ * (Maxus T60), en vez de ir probando a ciegas. El modo 01 PID 0x00 devuelve
+ * un bitmask de 32 bits con los PIDs 0x01-0x20 soportados; 0x20 idem para
+ * 0x21-0x40; 0x40 para 0x41-0x60; 0x60 para 0x61-0x80. Loguea la respuesta
+ * cruda nomas (el decodeo del bitmask se hace a mano con el log) — sacar
+ * esto una vez que ya sepamos que PIDs agregar de verdad al poll list. */
+static void log_discovery_response(const uint8_t *raw, size_t raw_len, void *ctx)
+{
+    const char *label = (const char *)ctx;
+    char text[64];
+    size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    memcpy(text, raw, copy_len);
+    text[copy_len] = '\0';
+    ESP_LOGI(TAG, "descubrimiento PIDs soportados (rango %s): '%s'", label, text);
+}
+
+static void discover_supported_pids(void)
+{
+    ESP_LOGI(TAG, "consultando PIDs estandar soportados por la ECU (una sola vez)...");
+    obd_driver_send_command("0100", log_discovery_response, (void *)"01-20");
+    vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+    obd_driver_send_command("0120", log_discovery_response, (void *)"21-40");
+    vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+    obd_driver_send_command("0140", log_discovery_response, (void *)"41-60");
+    vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+    obd_driver_send_command("0160", log_discovery_response, (void *)"61-80");
+    vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+}
+
 static void poll_task(void *arg)
 {
+    bool discovered = false;
     while (1) {
         if (!obd_driver_is_connected()) {
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
+        }
+
+        if (!discovered) {
+            discover_supported_pids();
+            discovered = true;
         }
 
         for (size_t i = 0; i < POLL_LIST_LEN; i++) {

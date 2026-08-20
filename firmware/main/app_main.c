@@ -9,10 +9,11 @@
  *   2. state_store_init()    -> crea el estado compartido (vacío) que todos leen/escriben
  *   3. pid_engine_init()      -> prepara la tabla de PIDs a pollear
  *   4. obd_driver_init()     -> arranca BLE, escanea y conecta al adaptador OBD
- *   5. pid_engine_start_polling() -> empieza a pedir datos apenas haya conexión
+ *   5. ui_init()             -> enciende pantalla (AXP192+LVGL) y la deja lista para dibujar
+ *   6. pid_engine_start_polling() -> empieza a pedir datos apenas haya conexión
  *
- * ui y connectivity todavía no se llaman acá: se integran cuando tengan
- * implementación real (ver TODOs en sus respectivos .c).
+ * connectivity todavía no se llama acá: se integra cuando tenga implementación
+ * real (ver TODOs en su .c).
  */
 
 #include "freertos/FreeRTOS.h"
@@ -23,6 +24,7 @@
 #include "state_store.h"
 #include "obd_driver.h"
 #include "pid_engine.h"
+#include "ui.h"
 
 static const char *TAG = "car_companion";
 
@@ -32,10 +34,14 @@ static const char *TAG = "car_companion";
 static void log_state_change(const vehicle_state_t *state, void *ctx)
 {
     (void)ctx;
-    ESP_LOGI(TAG, "RPM=%u  vel=%ukm/h  coolant=%dC  bat=%.1fV  carga=%u%%  MAP=%dkPa  CEL=%s",
+    ESP_LOGI(TAG, "RPM=%u  vel=%ukm/h  coolant=%dC  bat=%.1fV  carga=%u%%  boost=%dkPa (baro=%ukPa)  "
+                  "acel=%u%%  rail=%ukPa  combustible=%.1fL/h  ambiente=%dC  CEL=%s",
              state->rpm, state->speed_kmh, state->coolant_temp_c,
              state->battery_voltage, state->engine_load_pct,
-             state->boost_pressure_kpa, state->check_engine_on ? "ON" : "off");
+             state->boost_pressure_kpa, state->barometric_pressure_kpa,
+             state->throttle_pct, (unsigned)state->fuel_rail_pressure_kpa,
+             state->fuel_rate_lph, state->ambient_air_temp_c,
+             state->check_engine_on ? "ON" : "off");
 }
 
 void app_main(void)
@@ -46,13 +52,12 @@ void app_main(void)
     ESP_ERROR_CHECK(state_store_init());
     ESP_ERROR_CHECK(pid_engine_init());
     ESP_ERROR_CHECK(obd_driver_init());
+    ESP_ERROR_CHECK(ui_init());
 
     state_store_subscribe(log_state_change, NULL);
+    ui_show_main_screen();
 
     ESP_ERROR_CHECK(pid_engine_start_polling());
 
     ESP_LOGI(TAG, "arranque completo — esperando conexion BLE con el adaptador OBD");
-
-    // TODO: reemplazar este log-only por ui_init() + ui_show_main_screen()
-    // apenas el componente `ui` tenga implementación real (ver firmware/components/ui).
 }

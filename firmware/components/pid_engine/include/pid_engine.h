@@ -14,12 +14,18 @@
  */
 
 typedef enum {
+    PID_MONITOR_STATUS        = 0x01, // bit7 de byte A = check engine (MIL) encendido
     PID_ENGINE_RPM            = 0x0C,
     PID_VEHICLE_SPEED         = 0x0D,
     PID_COOLANT_TEMP          = 0x05,
     PID_ENGINE_LOAD            = 0x04,
     PID_INTAKE_AIR_TEMP       = 0x0F,
-    PID_INTAKE_MAP            = 0x0B, // Manifold Absolute Pressure (kPa) - proxy de boost si el motor es turbo
+    PID_INTAKE_MAP            = 0x0B, // Manifold Absolute Pressure (kPa) - se combina con PID_BAROMETRIC_PRESSURE para el boost real
+    PID_THROTTLE_POS          = 0x11,
+    PID_FUEL_RAIL_PRESSURE    = 0x23, // common-rail diesel, confirmado soportado en el Maxus T60 (ver firmware/README.md)
+    PID_BAROMETRIC_PRESSURE   = 0x33,
+    PID_AMBIENT_AIR_TEMP      = 0x46,
+    PID_FUEL_RATE             = 0x5E,
 } standard_pid_t;
 
 esp_err_t pid_engine_init(void);

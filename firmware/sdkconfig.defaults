@@ -27,3 +27,23 @@ CONFIG_SPIRAM_MODE_QUAD=y
 # de tamaño en cada boot — ver log de flasheo del 19 ago).
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# LVGL: la fuente montserrat_20 que usa ui/ui.c no viene habilitada por
+# default (solo 14 lo esta), y necesitamos I2C driver legacy para el AXP192.
+CONFIG_LV_FONT_MONTSERRAT_20=y
+# montserrat_28 para el numero grande de RPM del dashboard.
+CONFIG_LV_FONT_MONTSERRAT_28=y
+
+# El panel SPI del Core2 (ILI9342C) espera los pixeles RGB565 con los bytes
+# al reves de como LVGL los arma por default — sin esto, cada pixel sale con
+# los canales de color mezclados (visto en hardware real el 19 ago: texto
+# con "fringing" de colores, fondo negro se veia bien porque 0x0000 da igual
+# con los bytes al reves).
+CONFIG_LV_COLOR_16_SWAP=y
+
+# Pool de memoria interno de LVGL (para lv_obj_t, estilos, etc. — NO es el
+# buffer de dibujo). El default de 32KB se desbordo con un test de ~300
+# objetos chicos (crash real en hardware el 19 ago, dentro de LVGL mismo).
+# La pantalla real usa muy pocos objetos (labels), pero subimos el pool con
+# margen para no volver a pisar esto.
+CONFIG_LV_MEM_SIZE_KILOBYTES=48

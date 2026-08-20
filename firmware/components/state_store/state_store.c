@@ -198,3 +198,63 @@ esp_err_t state_store_set_check_engine(bool on)
     notify_subscribers();
     return ESP_OK;
 }
+
+esp_err_t state_store_set_throttle(uint8_t pct)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.throttle_pct = pct;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+esp_err_t state_store_set_fuel_rail_pressure(uint32_t kpa)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.fuel_rail_pressure_kpa = kpa;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+esp_err_t state_store_set_fuel_rate(float lph)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.fuel_rate_lph = lph;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+esp_err_t state_store_set_ambient_air_temp(int16_t temp_c)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.ambient_air_temp_c = temp_c;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+esp_err_t state_store_set_barometric_pressure(uint8_t kpa)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.barometric_pressure_kpa = kpa;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}

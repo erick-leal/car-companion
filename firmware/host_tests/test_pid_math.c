@@ -50,6 +50,30 @@ int main(void)
     // MAP: PID 0x0B, 1 byte directo en kPa
     ASSERT_EQ_INT("MAP 0x65 -> 101 kPa (~atmosferica)", 101, pid_math_map_kpa(0x65));
 
+    // Acelerador: PID 0x11, misma formula que carga motor
+    ASSERT_EQ_INT("Acelerador 0x00 -> 0%", 0, pid_math_throttle_pct(0x00));
+    ASSERT_EQ_INT("Acelerador 0xFF -> 100%", 100, pid_math_throttle_pct(0xFF));
+
+    // Presion de riel (diesel common-rail): PID 0x23, 10*((A*256)+B) kPa
+    ASSERT_EQ_INT("Riel 0x00 0x00 -> 0 kPa", 0, pid_math_fuel_rail_pressure_kpa(0x00, 0x00));
+    // A=0x4E B=0x20 -> (78*256+32)=20000*10=200000 kPa (~2000 bar, tipico de un common-rail moderno)
+    ASSERT_EQ_INT("Riel 0x4E 0x20 -> 200000 kPa", 200000, pid_math_fuel_rail_pressure_kpa(0x4E, 0x20));
+
+    // Caudal de combustible: PID 0x5E, ((A*256)+B)/20 L/h
+    {
+        float lph = pid_math_fuel_rate_lph(0x00, 0x64); // 100/20 = 5.0
+        if (fabsf(lph - 5.0f) > 0.01f) {
+            printf("FAIL: fuel_rate_lph valor -> esperado 5.0, obtuvo %f\n", lph);
+            g_failures++;
+        } else {
+            printf("OK:   fuel_rate_lph 0x00 0x64 == 5.0\n");
+        }
+    }
+
+    // Check engine (MIL): PID 0x01, bit 7 de A
+    ASSERT_EQ_INT("MIL bit7=1 -> encendido", 1, pid_math_mil_on(0x80));
+    ASSERT_EQ_INT("MIL bit7=0 -> apagado", 0, pid_math_mil_on(0x07));
+
     // Parseo de texto hex ASCII -> bytes (respuesta ELM327 típica)
     {
         uint8_t bytes[8];
