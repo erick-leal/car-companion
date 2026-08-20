@@ -55,7 +55,10 @@ static void lvgl_unlock(void)
 #define COL_WARN      lv_color_hex(0xD29922)
 #define COL_DANGER    lv_color_hex(0xF85149)
 
-#define RPM_MAX 5000 // diesel: corta bastante antes que un nafta
+/* Calibrado para el diesel del Maxus T60, que corta bastante antes que un
+ * motor a gasolina. Si se prueba en un auto a gasolina (ej. el MG3), subir
+ * a ~7000 o el arco se llena antes de tiempo. */
+#define RPM_MAX 5000
 
 static lv_obj_t *s_arc_rpm;
 static lv_obj_t *s_lbl_rpm_val;
