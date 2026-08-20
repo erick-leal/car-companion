@@ -129,8 +129,12 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
 
     char buf[32];
 
-    /* RPM: arco + numero al centro. El color del arco avisa de reojo si el
-     * motor esta en zona alta, sin tener que leer el numero. */
+    bool engine_running = state->rpm > 0;
+
+    /* RPM: arco + numero al centro. Zonas estimadas para el diesel del T60
+     * (ralenti ~800, uso normal hasta ~2500-3000, forzando el motor de ahi a
+     * ~3500-4000, y de ahi al corte). Si el manual del Maxus da el corte real
+     * exacto, ajustar RPM_MAX y estos umbrales a eso en vez de la estimacion. */
     uint16_t rpm = state->rpm > RPM_MAX ? RPM_MAX : state->rpm;
     lv_arc_set_value(s_arc_rpm, rpm);
     snprintf(buf, sizeof(buf), "%u", state->rpm);
@@ -144,21 +148,40 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     snprintf(buf, sizeof(buf), "%u", state->speed_kmh);
     lv_label_set_text(s_lbl_speed_val, buf);
 
-    /* Refrigerante: verde en marcha normal, ambar tibio, rojo si recalienta. */
+    /* Refrigerante: la mayoria de los motores opera en 90-105C. Por debajo
+     * de 70C todavia esta entrando en temperatura (normal en frio, no es
+     * una falla, por eso va en celeste "informativo" y no en rojo/verde).
+     * Sobre 105C es sobrecalentamiento real. */
     snprintf(buf, sizeof(buf), "%d C", state->coolant_temp_c);
     lv_label_set_text(s_lbl_coolant_val, buf);
     lv_obj_set_style_text_color(s_lbl_coolant_val,
                                  state->coolant_temp_c > 105 ? COL_DANGER :
                                  state->coolant_temp_c > 95  ? COL_WARN :
-                                 state->coolant_temp_c > 70  ? COL_OK : COL_VALUE, 0);
+                                 state->coolant_temp_c > 70  ? COL_OK :
+                                 state->coolant_temp_c > 0   ? COL_ACCENT : COL_VALUE, 0);
 
-    /* Bateria: con motor en marcha el alternador deberia dar >13.2V; por
-     * debajo de 12V con motor apagado ya es bateria floja. */
+    /* Bateria: el rango "normal" depende de si el motor esta prendido o no,
+     * y ese es justo el dato que mas le importa a un mecanico:
+     *   - Motor apagado: bateria en reposo, 12.4-12.9V es sano, <11.8V
+     *     ya es bateria floja/vieja.
+     *   - Motor prendido: el alternador deberia estar cargando a 13.2-14.8V.
+     *     Menos de eso con el motor andando es indicio real de que el
+     *     alternador no esta cargando (correa, regulador, etc) — mas de
+     *     14.8V sostenido es sobrecarga (regulador de voltaje fallando). */
     snprintf(buf, sizeof(buf), "%.1f V", state->battery_voltage);
     lv_label_set_text(s_lbl_batt_val, buf);
-    lv_obj_set_style_text_color(s_lbl_batt_val,
-                                 state->battery_voltage < 11.8f ? COL_DANGER :
-                                 state->battery_voltage > 13.2f ? COL_OK : COL_VALUE, 0);
+    lv_color_t batt_col;
+    if (engine_running) {
+        batt_col = (state->battery_voltage < 13.0f || state->battery_voltage > 14.8f) ? COL_DANGER
+                 : (state->battery_voltage < 13.2f) ? COL_WARN
+                                                     : COL_OK;
+    } else {
+        batt_col = (state->battery_voltage < 11.8f) ? COL_DANGER
+                 : (state->battery_voltage < 12.4f) ? COL_WARN
+                 : (state->battery_voltage <= 12.9f) ? COL_OK
+                                                      : COL_VALUE; // >12.9V en reposo: raro, no aventuramos veredicto
+    }
+    lv_obj_set_style_text_color(s_lbl_batt_val, batt_col, 0);
 
     snprintf(buf, sizeof(buf), "%d", state->boost_pressure_kpa);
     lv_label_set_text(s_lbl_boost_val, buf);
