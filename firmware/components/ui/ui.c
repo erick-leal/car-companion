@@ -141,24 +141,23 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     lv_label_set_text(s_lbl_rpm_val, buf);
     lv_color_t rpm_col = state->rpm > 3500 ? COL_DANGER
                        : state->rpm > 2500 ? COL_WARN
-                                            : COL_ACCENT;
+                                            : COL_OK;
     lv_obj_set_style_arc_color(s_arc_rpm, rpm_col, LV_PART_INDICATOR);
     lv_obj_set_style_text_color(s_lbl_rpm_val, rpm_col, 0);
 
     snprintf(buf, sizeof(buf), "%u", state->speed_kmh);
     lv_label_set_text(s_lbl_speed_val, buf);
 
-    /* Refrigerante: la mayoria de los motores opera en 90-105C. Por debajo
-     * de 70C todavia esta entrando en temperatura (normal en frio, no es
-     * una falla, por eso va en celeste "informativo" y no en rojo/verde).
-     * Sobre 105C es sobrecalentamiento real. */
+    /* Refrigerante: la mayoria de los motores opera en 90-105C. Entrando en
+     * temperatura (frio, recien arrancado) tambien cuenta como verde: no es
+     * una falla, es esperable. Sobre 105C es sobrecalentamiento real. Solo
+     * verde/ambar/rojo, sin un cuarto color para no perder el criterio de
+     * "un color = un nivel de atencion" en toda la pantalla. */
     snprintf(buf, sizeof(buf), "%d C", state->coolant_temp_c);
     lv_label_set_text(s_lbl_coolant_val, buf);
     lv_obj_set_style_text_color(s_lbl_coolant_val,
                                  state->coolant_temp_c > 105 ? COL_DANGER :
-                                 state->coolant_temp_c > 95  ? COL_WARN :
-                                 state->coolant_temp_c > 70  ? COL_OK :
-                                 state->coolant_temp_c > 0   ? COL_ACCENT : COL_VALUE, 0);
+                                 state->coolant_temp_c > 95  ? COL_WARN : COL_OK, 0);
 
     /* Bateria: el rango "normal" depende de si el motor esta prendido o no,
      * y ese es justo el dato que mas le importa a un mecanico:
@@ -257,11 +256,11 @@ static void build_main_screen(void)
     lv_obj_set_style_arc_width(s_arc_rpm, 9, LV_PART_MAIN);
     lv_obj_set_style_arc_width(s_arc_rpm, 9, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(s_arc_rpm, COL_CARD, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_rpm, COL_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_arc_rpm, COL_OK, LV_PART_INDICATOR);
 
     s_lbl_rpm_val = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_rpm_val, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(s_lbl_rpm_val, COL_ACCENT, 0);
+    lv_obj_set_style_text_color(s_lbl_rpm_val, COL_OK, 0);
     lv_label_set_text(s_lbl_rpm_val, "0");
     lv_obj_align(s_lbl_rpm_val, LV_ALIGN_TOP_LEFT, 6 + 58 - 30, 26 + 44);
     lv_obj_set_width(s_lbl_rpm_val, 60);
