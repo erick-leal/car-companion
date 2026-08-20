@@ -299,3 +299,15 @@ para otro vehículo sin tocar una sola pantalla.
    velocidad siempre 0 y boost sin carga de turbo real).
 7. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
    bitmask estándar, requieren ingeniería inversa. Ver `docs/pid-mapping.md`.
+8. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
+   ago)**. El Core2 trae un MPU6886 (acelerómetro+giroscopio, confirmado en
+   la fuente de M5Stack) en el mismo bus I2C que el AXP192/táctil, y se
+   calibró en hardware real: sostenido normal el eje Y da `~+0.99g`, dado
+   vuelta 180° da `~-1.01g` — separación clara, sin ambigüedad. El problema
+   fue que `esp_lcd_panel_mirror()` cambiaba el registro MADCTL del panel
+   (confirmado por log que la detección de orientación funcionaba) pero la
+   pantalla no rotaba visualmente. No se investigó por qué — quedó afuera
+   para no seguir iterando ese día. Si se retoma: probablemente haga falta
+   forzar un redibujado completo (`lv_obj_invalidate` de toda la pantalla)
+   después de cambiar el mirror, en vez de asumir que el panel reinterpreta
+   la GRAM ya escrita on-the-fly.
