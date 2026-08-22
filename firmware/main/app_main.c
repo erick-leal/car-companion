@@ -5,8 +5,11 @@
  * tener lógica de negocio (eso vive en cada componente).
  *
  * Orden de arranque (ver docs/architecture.md para el porqué del orden):
- *   1. storage_init()        -> monta almacenamiento local antes que nada más
- *   2. state_store_init()    -> crea el estado compartido (vacío) que todos leen/escriben
+ *   1. state_store_init()    -> crea el estado compartido (vacío) que todos leen/escriben
+ *   2. storage_init()        -> monta almacenamiento local y se suscribe a
+ *      state_store para armar el historial de viajes solo — por eso tiene
+ *      que ir DESPUES de state_store_init (necesita el mutex ya creado;
+ *      llamarlo antes crashea, se probo al reves por error el 22 ago)
  *   3. pid_engine_init()      -> prepara la tabla de PIDs a pollear
  *   4. obd_driver_init()     -> arranca BLE, escanea y conecta al adaptador OBD
  *   5. ui_init()             -> enciende pantalla (AXP192+LVGL) y la deja lista para dibujar
@@ -48,8 +51,8 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Car Companion — arrancando");
 
-    ESP_ERROR_CHECK(storage_init());
     ESP_ERROR_CHECK(state_store_init());
+    ESP_ERROR_CHECK(storage_init());
     ESP_ERROR_CHECK(pid_engine_init());
     ESP_ERROR_CHECK(obd_driver_init());
     ESP_ERROR_CHECK(ui_init());

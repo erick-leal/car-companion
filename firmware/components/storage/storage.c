@@ -1,24 +1,185 @@
 #include "storage.h"
+#include "state_store.h"
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
+#include "esp_timer.h"
+#include <stdio.h>
+#include <string.h>
 
 static const char *TAG = "storage";
 
+#define MOUNT_POINT   "/storage"
+#define TRIPS_FILE    MOUNT_POINT "/trips.bin"
+
+/* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. Tiene
+ * que ser mas largo que un semaforo en rojo (sino cortariamos un viaje real
+ * en pedacitos) pero no tan largo como para pegar dos viajes distintos del
+ * mismo dia si el auto queda un rato parado con el OBD conectado. */
+#define TRIP_END_IDLE_TIMEOUT_S 120
+
+static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
+
+/* --- Estado del viaje en curso (RAM, se persiste recien al terminar) --- */
+static bool     s_in_trip;
+static int64_t  s_trip_start_us;
+static int64_t  s_last_sample_us;   // 0 = todavia no hubo una muestra real para integrar contra
+static int64_t  s_last_rpm_nonzero_us;
+static double   s_distance_km_accum;
+static double   s_fuel_l_accum;
+static double   s_speed_sum;
+static uint32_t s_speed_samples;
+static uint16_t s_max_rpm;
+static int16_t  s_max_coolant;
+static float    s_min_battery;
+static bool     s_check_engine_seen;
+
+static void start_trip(int64_t now_us, const vehicle_state_t *state)
+{
+    s_in_trip = true;
+    s_trip_start_us = now_us;
+    s_last_sample_us = 0;
+    s_distance_km_accum = 0;
+    s_fuel_l_accum = 0;
+    s_speed_sum = 0;
+    s_speed_samples = 0;
+    s_max_rpm = state->rpm;
+    s_max_coolant = state->coolant_temp_c;
+    s_min_battery = state->battery_voltage;
+    s_check_engine_seen = state->check_engine_on;
+    ESP_LOGI(TAG, "viaje iniciado");
+}
+
+static void end_trip(int64_t now_us)
+{
+    trip_record_t rec = {
+        .start_time_s   = (uint32_t)(s_trip_start_us / 1000000),
+        .duration_s     = (uint32_t)((now_us - s_trip_start_us) / 1000000),
+        .distance_km    = (float)s_distance_km_accum,
+        .fuel_used_l    = (float)s_fuel_l_accum,
+        .avg_speed_kmh  = s_speed_samples > 0 ? (uint16_t)(s_speed_sum / s_speed_samples) : 0,
+        .max_rpm        = s_max_rpm,
+        .max_coolant_c  = s_max_coolant,
+        .min_battery_v  = s_min_battery,
+        .check_engine_seen = s_check_engine_seen,
+    };
+    s_in_trip = false;
+
+    /* Viajes de menos de 30s son casi siempre "arranque y freno en el
+     * garage", no un viaje real — no vale la pena gastar flash en eso. */
+    if (rec.duration_s < 30) {
+        ESP_LOGI(TAG, "viaje descartado (%lus, muy corto)", (unsigned long)rec.duration_s);
+        return;
+    }
+
+    FILE *f = fopen(TRIPS_FILE, "ab");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el viaje", TRIPS_FILE);
+        return;
+    }
+    fwrite(&rec, sizeof(rec), 1, f);
+    fclose(f);
+    ESP_LOGI(TAG, "viaje guardado: %lus, %.1fkm, %.2fL, %uRPM max",
+             (unsigned long)rec.duration_s, rec.distance_km, rec.fuel_used_l, rec.max_rpm);
+}
+
+static void on_state_change(const vehicle_state_t *state, void *ctx)
+{
+    (void)ctx;
+    int64_t now = esp_timer_get_time();
+
+    if (!state->data_valid) {
+        if (s_in_trip) end_trip(now);
+        return;
+    }
+
+    if (state->rpm > 0) {
+        s_last_rpm_nonzero_us = now;
+        if (!s_in_trip) start_trip(now, state);
+    }
+
+    if (!s_in_trip) return;
+
+    /* Integrar distancia/combustible contra el tiempo real transcurrido
+     * desde la ultima muestra. Se descarta un salto de tiempo grande (mas de
+     * 30s entre muestras, cuando normalmente llegan cada ~150ms) para no
+     * inventar distancia/combustible de un hueco de datos (reconexion BLE,
+     * etc) como si el auto hubiera viajado durante ese hueco. */
+    if (s_last_sample_us != 0) {
+        double dt_hours = (now - s_last_sample_us) / 3600000000.0;
+        if (dt_hours > 0 && dt_hours < (30.0 / 3600.0)) {
+            s_distance_km_accum += state->speed_kmh * dt_hours;
+            s_fuel_l_accum += state->fuel_rate_lph * dt_hours;
+        }
+    }
+    s_last_sample_us = now;
+
+    s_speed_sum += state->speed_kmh;
+    s_speed_samples++;
+    if (state->rpm > s_max_rpm) s_max_rpm = state->rpm;
+    if (state->coolant_temp_c > s_max_coolant) s_max_coolant = state->coolant_temp_c;
+    if (state->battery_voltage < s_min_battery) s_min_battery = state->battery_voltage;
+    if (state->check_engine_on) s_check_engine_seen = true;
+
+    if ((now - s_last_rpm_nonzero_us) > (int64_t)TRIP_END_IDLE_TIMEOUT_S * 1000000) {
+        end_trip(now);
+    }
+}
+
 esp_err_t storage_init(void)
 {
-    // TODO: nvs_flash_init() para config; montar SD (SPI) o usar partición SPIFFS/FAT
-    // para el historial de viajes si no hay slot de SD en el hardware final.
-    ESP_LOGW(TAG, "storage_init: no implementado todavía");
+    const esp_vfs_fat_mount_config_t mount_config = {
+        .max_files = 4,
+        .format_if_mount_failed = true, // primer boot: la particion viene sin formatear
+        .allocation_unit_size = CONFIG_WL_SECTOR_SIZE,
+    };
+    esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl(MOUNT_POINT, "storage", &mount_config, &s_wl_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "no se pudo montar la particion de storage: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    state_store_subscribe(on_state_change, NULL);
+
+    uint32_t count = 0;
+    storage_get_trip_count(&count);
+    ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados)", MOUNT_POINT, (unsigned long)count);
     return ESP_OK;
 }
 
-esp_err_t storage_save_trip_record(const void *record, size_t len)
+esp_err_t storage_get_trip_count(uint32_t *out_count)
 {
-    ESP_LOGW(TAG, "storage_save_trip_record: no implementado todavía");
+    FILE *f = fopen(TRIPS_FILE, "rb");
+    if (f == NULL) {
+        *out_count = 0; // no hay archivo todavia = ningun viaje guardado, no es un error
+        return ESP_OK;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fclose(f);
+    *out_count = (uint32_t)(size / (long)sizeof(trip_record_t));
     return ESP_OK;
 }
 
-esp_err_t storage_get_pending_sync_count(int *count)
+esp_err_t storage_get_trip(uint32_t index, trip_record_t *out)
 {
-    *count = 0;
-    return ESP_OK;
+    FILE *f = fopen(TRIPS_FILE, "rb");
+    if (f == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    esp_err_t ret = ESP_OK;
+    if (fseek(f, (long)(index * sizeof(trip_record_t)), SEEK_SET) != 0 ||
+        fread(out, sizeof(*out), 1, f) != 1) {
+        ret = ESP_ERR_NOT_FOUND;
+    }
+    fclose(f);
+    return ret;
+}
+
+esp_err_t storage_get_pending_sync_count(uint32_t *out_count)
+{
+    /* Sin `connectivity` todavia no se sincronizo nunca nada, asi que
+     * "pendiente" es lo mismo que "total" por ahora. El dia que
+     * connectivity exista, esta funcion va a necesitar guardar un cursor
+     * (hasta que indice ya se mando) en vez de devolver el total siempre. */
+    return storage_get_trip_count(out_count);
 }

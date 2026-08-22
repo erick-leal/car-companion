@@ -231,7 +231,32 @@ para otro vehículo sin tocar una sola pantalla.
     propio, dashboard (arco de RPM + tarjetas de valores con código de
     colores) y menú táctil con navegación a pantallas secundarias.
 
-- ❌ `connectivity` / `storage` (contenido real) — quedan para Fase 2.
+- ✅ `storage` — implementado (22 ago), primer pedazo real de Fase 2.
+  Agrega una partición FAT dedicada de ~14MB (`firmware/partitions.csv` — el
+  Core2 tiene 16MB de flash y la tabla "single app" default solo usaba
+  ~1MB, dejaba el resto sin particionar) y arma el historial de viajes
+  solo, suscrito a `state_store`: un viaje empieza cuando el RPM pasa a ser
+  mayor que 0 con datos válidos, y termina si el OBD se desconecta o el
+  motor queda en 0 RPM sostenido 2 minutos (para no cortar el viaje en cada
+  semáforo). Guarda distancia (integrada de velocidad), combustible usado
+  (integrado del caudal), RPM máximo, temp máxima, batería mínima y si hubo
+  CEL. Viajes de menos de 30s se descartan. **Ojo con el orden de
+  `app_main.c`**: `storage_init()` se suscribe a `state_store` internamente,
+  así que tiene que ir DESPUÉS de `state_store_init()` — al revés crashea
+  (mutex nulo), se probó en hardware real el 22 ago.
+
+  **Limitación real, no resuelta:** sin `connectivity` (WiFi/NTP) no hay
+  hora de pared confiable — `start_time_s` de cada viaje es segundos desde
+  el arranque del ESP32, no una fecha real. Se resuelve cuando
+  `connectivity` sincronice con el backend (que sí sabe la hora real de
+  cuándo llegó cada sync).
+
+  Confirmado en hardware real: la partición monta, el filesystem se
+  formatea solo en el primer arranque, no rompe nada del resto del sistema.
+  **No confirmado todavía:** el ciclo completo de un viaje real (arrancar,
+  manejar, apagar, ver el registro guardado) — falta probarlo la próxima
+  vez que se maneje el auto con esto flasheado.
+- ❌ `connectivity` — sigue sin implementar (WiFi, sync con el backend).
 
 ### Trampas de bring-up del Core2 (costaron una tarde entera, no repetirlas)
 
@@ -287,19 +312,24 @@ para otro vehículo sin tocar una sola pantalla.
 4. ~~Ampliar los PIDs y hacer que `ui` muestre los datos en la pantalla~~ —
    hecho el 19-20 ago (12 PIDs, dashboard con arco de RPM + tarjetas, menú
    táctil).
-5. **Lo que sigue:** llenar las pantallas secundarias, que hoy son
+5. ~~Ampliar el dashboard (velocidad como dato héroe) + batería del M5~~ —
+   hecho el 22 ago.
+6. ~~`storage`: historial de viajes en flash~~ — hecho el 22 ago, ver arriba.
+   **Falta probar un viaje real completo** (queda pendiente para la próxima
+   vez que se maneje el auto).
+7. **Lo que sigue:** llenar las pantallas secundarias, que hoy son
    placeholders con botón de volver:
-   - **Viaje** — distancia, consumo promedio, duración. Necesita `storage`
-     para acumular entre viajes.
+   - **Viaje** — ya hay datos guardados por `storage` (`storage_get_trip*`);
+     falta que la pantalla los lea y los muestre.
    - **Fallas (DTC)** — leer códigos con modo 03 y borrarlos con modo 04.
      `obd_driver` ya puede mandar comandos arbitrarios, falta el parseo.
    - **Diagnóstico** — PIDs crudos y estado del adaptador, para debug en el auto.
-   - **Mantenimiento** — service, filtros, aceite. Necesita `storage`.
-6. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
+   - **Mantenimiento** — service, filtros, aceite. Puede reusar `storage`.
+8. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
    velocidad siempre 0 y boost sin carga de turbo real).
-7. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
+9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
    bitmask estándar, requieren ingeniería inversa. Ver `docs/pid-mapping.md`.
-8. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
+10. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
    ago)**. El Core2 trae un MPU6886 (acelerómetro+giroscopio, confirmado en
    la fuente de M5Stack) en el mismo bus I2C que el AXP192/táctil, y se
    calibró en hardware real: sostenido normal el eje Y da `~+0.99g`, dado

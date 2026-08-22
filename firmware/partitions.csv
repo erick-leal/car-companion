@@ -1,0 +1,10 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+#
+# El Core2 tiene 16MB de flash. La tabla por default de ESP-IDF ("single app")
+# solo usa ~1MB (app) + 28KB (nvs+phy) y deja el resto sin particionar — no
+# hay donde guardar el historial de viajes. Esta tabla reserva una particion
+# FAT dedicada para eso.
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x200000,
+storage,  data, fat,     0x210000, 0xDF0000,
