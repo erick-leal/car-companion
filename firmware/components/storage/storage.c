@@ -11,11 +11,11 @@ static const char *TAG = "storage";
 #define MOUNT_POINT   "/storage"
 #define TRIPS_FILE    MOUNT_POINT "/trips.bin"
 
-/* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. Tiene
- * que ser mas largo que un semaforo en rojo (sino cortariamos un viaje real
- * en pedacitos) pero no tan largo como para pegar dos viajes distintos del
- * mismo dia si el auto queda un rato parado con el OBD conectado. */
-#define TRIP_END_IDLE_TIMEOUT_S 120
+/* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. 15min
+ * (no 2) porque una parada a cargar combustible + comprar algo facil entra
+ * en ese rango, y no queremos que eso corte el viaje en dos (pedido real del
+ * 22 ago, pensando en paradas tipo Copec). */
+#define TRIP_END_IDLE_TIMEOUT_S (15 * 60)
 
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
@@ -64,9 +64,9 @@ static void end_trip(int64_t now_us)
     };
     s_in_trip = false;
 
-    /* Viajes de menos de 30s son casi siempre "arranque y freno en el
-     * garage", no un viaje real — no vale la pena gastar flash en eso. */
-    if (rec.duration_s < 30) {
+    /* Viajes de menos de 5min no se guardan — mover el auto en el garage,
+     * probar el motor, etc, no cuentan como viaje real (pedido del 22 ago). */
+    if (rec.duration_s < 5 * 60) {
         ESP_LOGI(TAG, "viaje descartado (%lus, muy corto)", (unsigned long)rec.duration_s);
         return;
     }
