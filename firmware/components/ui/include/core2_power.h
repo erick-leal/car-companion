@@ -16,3 +16,11 @@
  * y en incontables proyectos ESP-IDF/Arduino desde 2020) — no inventados.
  */
 esp_err_t core2_power_init(void);
+
+/**
+ * Porcentaje de bateria DEL CORE2 (no del auto — para eso esta ATRV via
+ * obd_driver). Formula calcada de AXP192::GetBatteryLevel() en
+ * https://github.com/m5stack/M5Core2/blob/master/src/AXP192.cpp
+ * Devuelve 0-100, o -1 si fallo la lectura I2C.
+ */
+int core2_power_get_battery_pct(void);

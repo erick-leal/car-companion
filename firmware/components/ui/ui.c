@@ -36,14 +36,20 @@ static void lvgl_unlock(void)
     xSemaphoreGive(s_lvgl_mutex);
 }
 
-/* --- Pantalla principal: dashboard con arco de RPM + tarjetas de valores ---
+/* --- Pantalla principal: dashboard con arco de velocidad + tarjetas ---
  *
  * Layout pensado para los 320x240 del Core2:
- *   - barra superior (22px): titulo + estado de conexion + testigo CHECK
- *   - izquierda: arco de RPM (dato "heroe", el que se mira de reojo manejando)
- *   - derecha: tres tarjetas apiladas (velocidad, refrigerante, bateria)
- *   - abajo: tres tarjetas (boost, acelerador, consumo)
- */
+ *   - barra superior: menu, bateria del M5, estado OBD, testigo CHECK
+ *   - izquierda: arco de VELOCIDAD (dato "heroe" — pedido explicito, es lo
+ *     que mas interesa de reojo manejando; antes era RPM)
+ *   - derecha del arco: RPM y refrigerante
+ *   - abajo: bateria del auto, boost, acelerador, consumo (grilla 2x2)
+ *
+ * Todas las tarjetas de datos usan como minimo ~46px de alto: con el
+ * combo de fuentes que usamos (titulo montserrat_14 arriba + valor
+ * montserrat_20 abajo) por debajo de eso el titulo y el valor se pisan
+ * visualmente — bug real, visto en hardware el 22 ago. No bajar de ahi
+ * (las coordenadas de build_main_screen ya respetan esto, medidas a mano). */
 
 /* Paleta: fondo oscuro para no encandilar de noche en el auto. */
 #define COL_BG        lv_color_hex(0x0D1117)
@@ -57,12 +63,14 @@ static void lvgl_unlock(void)
 
 /* Calibrado para el diesel del Maxus T60, que corta bastante antes que un
  * motor a gasolina. Si se prueba en un auto a gasolina (ej. el MG3), subir
- * a ~7000 o el arco se llena antes de tiempo. */
+ * a ~7000. Ya no es el dato del arco (ver mas abajo), pero el color de su
+ * tarjeta sigue usando estas zonas. */
 #define RPM_MAX 5000
+#define SPEED_MAX_KMH 180 // fondo de escala del arco, no es un limite real
 
-static lv_obj_t *s_arc_rpm;
-static lv_obj_t *s_lbl_rpm_val;
+static lv_obj_t *s_arc_speed;
 static lv_obj_t *s_lbl_speed_val;
+static lv_obj_t *s_lbl_rpm_val;
 static lv_obj_t *s_lbl_coolant_val;
 static lv_obj_t *s_lbl_batt_val;
 static lv_obj_t *s_lbl_boost_val;
@@ -70,6 +78,7 @@ static lv_obj_t *s_lbl_thr_val;
 static lv_obj_t *s_lbl_fuel_val;
 static lv_obj_t *s_lbl_status;
 static lv_obj_t *s_lbl_cel;
+static lv_obj_t *s_lbl_m5batt;
 
 /* true solo mientras el dashboard esta en pantalla. Al cambiar de pantalla
  * lv_obj_clean() destruye esos labels y los punteros de arriba quedan
@@ -131,22 +140,24 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
 
     bool engine_running = state->rpm > 0;
 
-    /* RPM: arco + numero al centro. Zonas estimadas para el diesel del T60
-     * (ralenti ~800, uso normal hasta ~2500-3000, forzando el motor de ahi a
-     * ~3500-4000, y de ahi al corte). Si el manual del Maxus da el corte real
-     * exacto, ajustar RPM_MAX y estos umbrales a eso en vez de la estimacion. */
-    uint16_t rpm = state->rpm > RPM_MAX ? RPM_MAX : state->rpm;
-    lv_arc_set_value(s_arc_rpm, rpm);
-    snprintf(buf, sizeof(buf), "%u", state->rpm);
-    lv_label_set_text(s_lbl_rpm_val, buf);
-    lv_color_t rpm_col = state->rpm > 3500 ? COL_DANGER
-                       : state->rpm > 2500 ? COL_WARN
-                                            : COL_OK;
-    lv_obj_set_style_arc_color(s_arc_rpm, rpm_col, LV_PART_INDICATOR);
-    lv_obj_set_style_text_color(s_lbl_rpm_val, rpm_col, 0);
-
+    /* Velocidad: arco + numero al centro, es el dato "heroe" (pedido
+     * explicito por sobre RPM). No tiene zona de peligro real — un numero
+     * alto de velocidad no es en si mismo una falla del vehiculo — asi que
+     * el arco queda siempre en un solo color, no usa el semaforo. */
+    uint8_t speed = state->speed_kmh > SPEED_MAX_KMH ? SPEED_MAX_KMH : state->speed_kmh;
+    lv_arc_set_value(s_arc_speed, speed);
     snprintf(buf, sizeof(buf), "%u", state->speed_kmh);
     lv_label_set_text(s_lbl_speed_val, buf);
+
+    /* RPM en tarjeta. Zonas estimadas para el diesel del T60 (ralenti ~800,
+     * uso normal hasta ~2500-3000, forzando el motor de ahi a ~3500-4000, y
+     * de ahi al corte). Si el manual del Maxus da el corte real exacto,
+     * ajustar RPM_MAX y estos umbrales a eso en vez de la estimacion. */
+    snprintf(buf, sizeof(buf), "%u", state->rpm);
+    lv_label_set_text(s_lbl_rpm_val, buf);
+    lv_obj_set_style_text_color(s_lbl_rpm_val,
+                                 state->rpm > 3500 ? COL_DANGER :
+                                 state->rpm > 2500 ? COL_WARN : COL_OK, 0);
 
     /* Refrigerante: la mayoria de los motores opera en 90-105C. Entrando en
      * temperatura (frio, recien arrancado) tambien cuenta como verde: no es
@@ -217,9 +228,9 @@ static void build_main_screen(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* --- Barra superior: boton de menu + estado --- */
+    /* --- Barra superior: menu, bateria del M5, estado OBD, testigo CHECK --- */
     lv_obj_t *menu_btn = lv_btn_create(scr);
-    lv_obj_set_size(menu_btn, 74, 22);
+    lv_obj_set_size(menu_btn, 74, 20);
     lv_obj_set_pos(menu_btn, 6, 2);
     lv_obj_set_style_bg_color(menu_btn, COL_CARD, 0);
     lv_obj_set_style_radius(menu_btn, 5, 0);
@@ -230,6 +241,15 @@ static void build_main_screen(void)
     lv_obj_set_style_text_color(menu_lbl, COL_ACCENT, 0);
     lv_label_set_text(menu_lbl, LV_SYMBOL_LIST " MENU");
     lv_obj_center(menu_lbl);
+
+    /* Bateria del M5 (el dispositivo, no el auto — para eso esta la tarjeta
+     * BATERIA de mas abajo). Se actualiza sola cada rato desde
+     * lvgl_tick_task, no depende de datos del auto. */
+    s_lbl_m5batt = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_m5batt, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_m5batt, COL_CAPTION, 0);
+    lv_label_set_text(s_lbl_m5batt, LV_SYMBOL_BATTERY_FULL " --%");
+    lv_obj_align(s_lbl_m5batt, LV_ALIGN_TOP_MID, 0, 4);
 
     s_lbl_cel = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_cel, &lv_font_montserrat_14, 0);
@@ -243,48 +263,57 @@ static void build_main_screen(void)
     lv_label_set_text(s_lbl_status, "SIN OBD");
     lv_obj_align(s_lbl_status, LV_ALIGN_TOP_RIGHT, -8, 4);
 
-    /* --- Arco de RPM (izquierda) --- */
-    s_arc_rpm = lv_arc_create(scr);
-    lv_obj_set_size(s_arc_rpm, 116, 116);
-    lv_obj_set_pos(s_arc_rpm, 6, 26);
-    lv_arc_set_rotation(s_arc_rpm, 135);
-    lv_arc_set_bg_angles(s_arc_rpm, 0, 270);
-    lv_arc_set_range(s_arc_rpm, 0, RPM_MAX);
-    lv_arc_set_value(s_arc_rpm, 0);
-    lv_obj_remove_style(s_arc_rpm, NULL, LV_PART_KNOB); // sin perilla: es indicador, no control
-    lv_obj_clear_flag(s_arc_rpm, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(s_arc_rpm, 9, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_arc_rpm, 9, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s_arc_rpm, COL_CARD, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_arc_rpm, COL_OK, LV_PART_INDICATOR);
+    /* --- Arco de VELOCIDAD (izquierda, dato "heroe") ---
+     * Coordenadas medidas a mano sobre los 320x240 reales (mockup revisado
+     * y aprobado el 22 ago antes de flashear, no aproximadas): margen de
+     * 6px en todo el contorno, ninguna tarjeta por debajo de CARD_MIN_H. */
+    const int arc_x = 6, arc_y = 30, arc_sz = 100; // termina en y=130
+    s_arc_speed = lv_arc_create(scr);
+    lv_obj_set_size(s_arc_speed, arc_sz, arc_sz);
+    lv_obj_set_pos(s_arc_speed, arc_x, arc_y);
+    lv_arc_set_rotation(s_arc_speed, 135);
+    lv_arc_set_bg_angles(s_arc_speed, 0, 270);
+    lv_arc_set_range(s_arc_speed, 0, SPEED_MAX_KMH);
+    lv_arc_set_value(s_arc_speed, 0);
+    lv_obj_remove_style(s_arc_speed, NULL, LV_PART_KNOB); // sin perilla: es indicador, no control
+    lv_obj_clear_flag(s_arc_speed, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(s_arc_speed, 8, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_arc_speed, 8, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_arc_speed, COL_CARD, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_arc_speed, COL_ACCENT, LV_PART_INDICATOR);
 
-    s_lbl_rpm_val = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_rpm_val, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(s_lbl_rpm_val, COL_OK, 0);
-    lv_label_set_text(s_lbl_rpm_val, "0");
-    lv_obj_align(s_lbl_rpm_val, LV_ALIGN_TOP_LEFT, 6 + 58 - 30, 26 + 44);
-    lv_obj_set_width(s_lbl_rpm_val, 60);
-    lv_obj_set_style_text_align(s_lbl_rpm_val, LV_TEXT_ALIGN_CENTER, 0);
+    s_lbl_speed_val = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_speed_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_lbl_speed_val, COL_ACCENT, 0);
+    lv_label_set_text(s_lbl_speed_val, "0");
+    lv_obj_set_width(s_lbl_speed_val, arc_sz - 8);
+    lv_obj_set_style_text_align(s_lbl_speed_val, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_lbl_speed_val, LV_ALIGN_TOP_LEFT, arc_x + 4, arc_y + 34);
 
-    lv_obj_t *rpm_cap = lv_label_create(scr);
-    lv_obj_set_style_text_font(rpm_cap, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(rpm_cap, COL_CAPTION, 0);
-    lv_label_set_text(rpm_cap, "RPM");
-    lv_obj_set_width(rpm_cap, 60);
-    lv_obj_set_style_text_align(rpm_cap, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(rpm_cap, LV_ALIGN_TOP_LEFT, 6 + 58 - 30, 26 + 74);
+    lv_obj_t *speed_cap = lv_label_create(scr);
+    lv_obj_set_style_text_font(speed_cap, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(speed_cap, COL_CAPTION, 0);
+    lv_label_set_text(speed_cap, "km/h");
+    lv_obj_set_width(speed_cap, arc_sz - 8);
+    lv_obj_set_style_text_align(speed_cap, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(speed_cap, LV_ALIGN_TOP_LEFT, arc_x + 4, arc_y + 64);
 
-    /* --- Columna derecha --- */
-    const int rx = 132, rw = 182;
-    s_lbl_speed_val   = make_card(scr, rx, 26,  rw, 40, "VELOCIDAD  km/h", &lv_font_montserrat_20);
-    s_lbl_coolant_val = make_card(scr, rx, 70,  rw, 34, "REFRIGERANTE",    &lv_font_montserrat_20);
-    s_lbl_batt_val    = make_card(scr, rx, 108, rw, 34, "BATERIA",         &lv_font_montserrat_20);
+    /* --- Columna derecha del arco: RPM y refrigerante ---
+     * x=114 (6px despues del arco), ancho=200 (hasta el margen derecho).
+     * Dos tarjetas de 47px con 6px de separacion, terminan en y=130 —
+     * calzan justo con el fondo del arco, sin pisarlo. */
+    const int rx = 114, rw = 200;
+    s_lbl_rpm_val     = make_card(scr, rx, 30, rw, 47, "RPM",          &lv_font_montserrat_20);
+    s_lbl_coolant_val = make_card(scr, rx, 83, rw, 47, "REFRIGERANTE", &lv_font_montserrat_20);
 
-    /* --- Fila inferior --- */
-    const int by = 150, bh = 46, bw = 98;
-    s_lbl_boost_val = make_card(scr, 6,   by, bw, bh, "BOOST kPa",  &lv_font_montserrat_20);
-    s_lbl_thr_val   = make_card(scr, 110, by, bw, bh, "ACELERADOR", &lv_font_montserrat_20);
-    s_lbl_fuel_val  = make_card(scr, 214, by, bw, bh, "COMB. L/h",  &lv_font_montserrat_20);
+    /* --- Grilla inferior 2x2: bateria del auto, boost, acelerador, consumo ---
+     * Arranca en y=136 (6px despues del arco/columna), dos filas de 47px con
+     * 4px de separacion, terminan en y=234 (6px de margen hasta el borde de
+     * la pantalla en 240). Dos columnas de 151px con 6px de separacion. */
+    s_lbl_batt_val  = make_card(scr, 6,   136, 151, 47, "BATERIA",    &lv_font_montserrat_20);
+    s_lbl_boost_val = make_card(scr, 163, 136, 151, 47, "BOOST kPa",  &lv_font_montserrat_20);
+    s_lbl_thr_val   = make_card(scr, 6,   187, 151, 47, "ACELERADOR", &lv_font_montserrat_20);
+    s_lbl_fuel_val  = make_card(scr, 163, 187, 151, 47, "COMB. L/h",  &lv_font_montserrat_20);
 }
 
 /* --- Pantallas secundarias (todavia sin contenido real) --- */
@@ -514,12 +543,31 @@ static void lvgl_tick_task(void *arg)
      * (visto en hardware real el 19 ago: iter subia a cientos de miles en
      * segundos, y IDLE0/IDLE1 se moria de hambre). */
     const uint32_t tick_ms = 10;
+    uint32_t iter = 0;
     while (1) {
         lv_tick_inc(tick_ms);
         if (lvgl_lock(50)) {
+            /* Bateria del M5: no depende de datos del auto, asi que no tiene
+             * sentido colgarla de state_store/on_state_change — se lee sola
+             * cada ~5s directo del AXP192. */
+            if (s_dashboard_active && (iter % 500) == 0) {
+                int pct = core2_power_get_battery_pct();
+                if (pct >= 0) {
+                    char buf[16];
+                    const char *icon = pct > 66 ? LV_SYMBOL_BATTERY_FULL
+                                     : pct > 33 ? LV_SYMBOL_BATTERY_2
+                                                : LV_SYMBOL_BATTERY_EMPTY;
+                    snprintf(buf, sizeof(buf), "%s %d%%", icon, pct);
+                    lv_label_set_text(s_lbl_m5batt, buf);
+                    lv_obj_set_style_text_color(s_lbl_m5batt,
+                                                 pct < 15 ? COL_DANGER :
+                                                 pct < 30 ? COL_WARN : COL_CAPTION, 0);
+                }
+            }
             lv_timer_handler();
             lvgl_unlock();
         }
+        iter++;
         vTaskDelay(pdMS_TO_TICKS(tick_ms));
     }
 }

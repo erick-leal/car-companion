@@ -104,3 +104,24 @@ esp_err_t core2_power_init(void)
     ESP_LOGI(TAG, "core2_power_init OK (AXP192 configurado, LCD alimentado, vibrador apagado)");
     return ESP_OK;
 }
+
+int core2_power_get_battery_pct(void)
+{
+    /* ADC de bateria: 12 bits repartidos en dos registros consecutivos
+     * (0x78 = byte alto, 0x79 = byte bajo), 1.1mV por cuenta. Formula de
+     * porcentaje calcada de AXP192::GetBatteryLevel() de M5Stack — no es
+     * una curva de descarga real de LiPo, es la aproximacion lineal que usa
+     * la libreria oficial. */
+    uint8_t hi = 0, lo = 0;
+    if (axp192_read(0x78, &hi) != ESP_OK || axp192_read(0x79, &lo) != ESP_OK) {
+        return -1;
+    }
+    uint16_t adc = ((uint16_t)hi << 4) + lo;
+    float volts = adc * (1.1f / 1000.0f);
+
+    if (volts < 3.248088f) return 0;
+    float pct = (volts - 3.120712f) * 100.0f;
+    if (pct > 100.0f) pct = 100.0f;
+    if (pct < 0.0f) pct = 0.0f;
+    return (int)pct;
+}
