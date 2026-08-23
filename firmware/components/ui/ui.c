@@ -228,6 +228,11 @@ static void update_dtc_widgets(const vehicle_state_t *state)
         lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
         return;
     }
+    if (state->dtc_clear_in_progress) {
+        lv_label_set_text(s_lbl_dtc_body, "Borrando...");
+        lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+        return;
+    }
     if (state->dtc_count == 0) {
         /* Sin tilde a proposito: el font montserrat que usamos no incluye
          * caracteres acentuados, salian como un cuadrado vacio en pantalla
@@ -429,6 +434,24 @@ static void leer_dtc_event_cb(lv_event_t *e)
     state_store_request_dtc_read();
 }
 
+static void borrar_dtc_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    vehicle_state_t snapshot;
+    bool connected = state_store_get(&snapshot) == ESP_OK && snapshot.data_valid;
+    if (!connected) {
+        lv_label_set_text(s_lbl_dtc_body, "Sin conexion OBD.\n\nConecta el auto\ny toca de nuevo.");
+        lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+        return;
+    }
+
+    lv_label_set_text(s_lbl_dtc_body, "Borrando...");
+    lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+
+    state_store_request_dtc_clear();
+}
+
 static void build_dtc_screen(void)
 {
     lv_obj_t *scr = lv_scr_act();
@@ -453,9 +476,11 @@ static void build_dtc_screen(void)
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
     lv_obj_center(back_lbl);
 
+    /* LEER y BORRAR van en una segunda fila: no entran junto al boton VOLVER
+     * en los 320px de ancho (visto al intentarlo el 22 ago). */
     lv_obj_t *read_btn = lv_btn_create(scr);
-    lv_obj_set_size(read_btn, 140, 24);
-    lv_obj_set_pos(read_btn, 174, 4);
+    lv_obj_set_size(read_btn, 150, 24);
+    lv_obj_set_pos(read_btn, 6, 32);
     lv_obj_set_style_bg_color(read_btn, COL_CARD, 0);
     lv_obj_set_style_radius(read_btn, 5, 0);
     lv_obj_set_style_shadow_width(read_btn, 0, 0);
@@ -463,14 +488,27 @@ static void build_dtc_screen(void)
     lv_obj_t *read_lbl = lv_label_create(read_btn);
     lv_obj_set_style_text_font(read_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(read_lbl, COL_ACCENT, 0);
-    lv_label_set_text(read_lbl, LV_SYMBOL_REFRESH " LEER CODIGOS");
+    lv_label_set_text(read_lbl, LV_SYMBOL_REFRESH " LEER");
     lv_obj_center(read_lbl);
+
+    lv_obj_t *clear_btn = lv_btn_create(scr);
+    lv_obj_set_size(clear_btn, 150, 24);
+    lv_obj_set_pos(clear_btn, 162, 32);
+    lv_obj_set_style_bg_color(clear_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(clear_btn, 5, 0);
+    lv_obj_set_style_shadow_width(clear_btn, 0, 0);
+    lv_obj_add_event_cb(clear_btn, borrar_dtc_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *clear_lbl = lv_label_create(clear_btn);
+    lv_obj_set_style_text_font(clear_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(clear_lbl, COL_DANGER, 0);
+    lv_label_set_text(clear_lbl, LV_SYMBOL_TRASH " BORRAR");
+    lv_obj_center(clear_lbl);
 
     s_lbl_dtc_body = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_dtc_body, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_align(s_lbl_dtc_body, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(s_lbl_dtc_body, 300);
-    lv_obj_align(s_lbl_dtc_body, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_align(s_lbl_dtc_body, LV_ALIGN_TOP_MID, 0, 68);
 
     /* Pinta el estado actual ya guardado en state_store (por si el usuario
      * ya habia leido codigos antes y volvio a esta pantalla), sin esperar a

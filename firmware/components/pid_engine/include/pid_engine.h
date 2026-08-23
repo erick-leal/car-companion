@@ -51,3 +51,12 @@ esp_err_t pid_engine_parse_atrv_response(const char *response_text);
  * pantalla de Fallas), porque no tiene sentido pedirlo cada 150ms.
  */
 esp_err_t pid_engine_read_dtc_codes(void);
+
+/**
+ * Borra los codigos de falla activos y apaga el testigo CHECK (modo 04).
+ * Igual que la lectura, se dispara bajo pedido desde ui via el buzon de
+ * state_store. Si el ECU realmente tenia una falla activa (no solo
+ * historica), el codigo puede volver a aparecer en la proxima lectura —
+ * borrar no arregla la causa, solo el registro.
+ */
+esp_err_t pid_engine_clear_dtc_codes(void);

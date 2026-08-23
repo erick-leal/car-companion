@@ -200,6 +200,38 @@ esp_err_t pid_engine_read_dtc_codes(void)
     return obd_driver_send_command("03", handle_dtc_response, NULL);
 }
 
+static void handle_dtc_clear_response(const uint8_t *raw, size_t raw_len, void *ctx)
+{
+    (void)ctx;
+    char text[64];
+    size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    memcpy(text, raw, copy_len);
+    text[copy_len] = '\0';
+
+    if (strstr(text, "NO DATA") || strstr(text, "ERROR") || strstr(text, "UNABLE")) {
+        /* Fallamos en silencio hacia el estado anterior (misma logica que la
+         * lectura): no tocamos dtc_codes, solo apagamos el "Borrando...". */
+        ESP_LOGW(TAG, "borrado de DTC: adaptador respondio '%s'", text);
+        state_store_set_dtc_clear_in_progress(false);
+        return;
+    }
+
+    /* Respuesta positiva del modo 04 (tipicamente "44"): el ECU acepto el
+     * borrado. Limpiamos la lista local ahora mismo — set_dtc_codes tambien
+     * apaga dtc_clear_in_progress, asi que no hace falta llamarlo aparte. */
+    ESP_LOGI(TAG, "borrado de DTC: comando aceptado ('%s')", text);
+    state_store_set_dtc_codes(NULL, 0);
+}
+
+esp_err_t pid_engine_clear_dtc_codes(void)
+{
+    if (!obd_driver_is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    state_store_set_dtc_clear_in_progress(true);
+    return obd_driver_send_command("04", handle_dtc_clear_response, NULL);
+}
+
 /* DEBUG temporal: descubrir que PIDs estandar soporta realmente esta ECU
  * (Maxus T60), en vez de ir probando a ciegas. El modo 01 PID 0x00 devuelve
  * un bitmask de 32 bits con los PIDs 0x01-0x20 soportados; 0x20 idem para
@@ -249,6 +281,9 @@ static void poll_task(void *arg)
          * completa de 12 PIDs (~2s) sin necesidad. */
         if (state_store_consume_dtc_read_request()) {
             pid_engine_read_dtc_codes();
+        }
+        if (state_store_consume_dtc_clear_request()) {
+            pid_engine_clear_dtc_codes();
         }
 
         for (size_t i = 0; i < POLL_LIST_LEN; i++) {

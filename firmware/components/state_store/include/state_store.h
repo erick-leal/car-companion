@@ -36,7 +36,8 @@ typedef struct {
     uint8_t  barometric_pressure_kpa;
     char     dtc_codes[STATE_STORE_MAX_DTC][6]; // ej. "P0301", vacio ("") = slot sin usar
     uint8_t  dtc_count;
-    bool     dtc_read_in_progress; // para que ui muestre "leyendo..." en vez de "sin fallas" mientras espera
+    bool     dtc_read_in_progress;  // para que ui muestre "leyendo..." en vez de "sin fallas" mientras espera
+    bool     dtc_clear_in_progress; // idem para "borrando..." mientras se manda el modo 04
     bool     data_valid;           // false hasta la primera lectura real del OBD
     int64_t  last_update_us;       // esp_timer_get_time() del ultimo cambio, para detectar "datos viejos"
 } vehicle_state_t;
@@ -65,6 +66,7 @@ esp_err_t state_store_set_barometric_pressure(uint8_t kpa);
 /** codes[i] son strings de hasta 5 chars + '\0' (ej "P0301"), count <= STATE_STORE_MAX_DTC. */
 esp_err_t state_store_set_dtc_codes(const char codes[][6], uint8_t count);
 esp_err_t state_store_set_dtc_read_in_progress(bool in_progress);
+esp_err_t state_store_set_dtc_clear_in_progress(bool in_progress);
 
 /**
  * "Buzon de pedidos" de un solo item: ui llama a state_store_request_dtc_read()
@@ -77,6 +79,10 @@ esp_err_t state_store_set_dtc_read_in_progress(bool in_progress);
 esp_err_t state_store_request_dtc_read(void);
 /** true (una sola vez) si habia un pedido pendiente; lo limpia al leerlo. */
 bool state_store_consume_dtc_read_request(void);
+
+/** Mismo patron de buzon que arriba, para el boton "BORRAR CODIGOS" (modo 04). */
+esp_err_t state_store_request_dtc_clear(void);
+bool state_store_consume_dtc_clear_request(void);
 
 /** Usado por ui para redibujar cuando cambian los datos. Maximo STATE_STORE_MAX_SUBSCRIBERS. */
 esp_err_t state_store_subscribe(state_change_cb_t cb, void *ctx);

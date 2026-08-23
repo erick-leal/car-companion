@@ -70,6 +70,14 @@ Menú → **Fallas**.
   - Si en algún momento el auto tiene una falla real conocida (por ejemplo
     porque un mecánico ya la diagnosticó), es la mejor oportunidad para
     validar esta pantalla de punta a punta.
+- **Borrar códigos (botón nuevo, 22 ago)**: con al menos un código leído,
+  tocar "BORRAR" debería pasar por "Borrando..." y terminar en "Sin fallas."
+  Si la falla real sigue activa (no fue algo pasajero), es normal y
+  esperable que el código **vuelva a aparecer** la próxima vez que toques
+  "LEER" — eso no es un bug del código, es el auto reportando la falla de
+  nuevo porque la causa real sigue ahí. Probar también "BORRAR" sin
+  conexión OBD: debería mostrar el mismo mensaje "Sin conexion OBD..." que
+  "LEER", no quedarse mudo.
 
 ## 3. Viaje (historial)
 

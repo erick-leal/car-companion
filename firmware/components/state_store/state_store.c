@@ -272,6 +272,7 @@ esp_err_t state_store_set_dtc_codes(const char codes[][6], uint8_t count)
     }
     s_state.dtc_count = count;
     s_state.dtc_read_in_progress = false;
+    s_state.dtc_clear_in_progress = false; // una lectura exitosa tambien cierra un "Borrando..." si quedo pendiente
     s_state.data_valid = true;
     s_state.last_update_us = esp_timer_get_time();
     unlock();
@@ -289,10 +290,21 @@ esp_err_t state_store_set_dtc_read_in_progress(bool in_progress)
     return ESP_OK;
 }
 
-/* No es parte de vehicle_state_t a proposito: es un pedido de accion, no un
- * dato del vehiculo, asi que no dispara notify_subscribers (nadie necesita
- * "redibujar" por esto, solo pid_engine consumiendolo una vez). */
+esp_err_t state_store_set_dtc_clear_in_progress(bool in_progress)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.dtc_clear_in_progress = in_progress;
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+/* No son parte de vehicle_state_t a proposito: son pedidos de accion, no un
+ * dato del vehiculo, asi que no disparan notify_subscribers (nadie necesita
+ * "redibujar" por esto, solo pid_engine consumiendolos una vez). */
 static bool s_dtc_read_requested;
+static bool s_dtc_clear_requested;
 
 esp_err_t state_store_request_dtc_read(void)
 {
@@ -308,6 +320,24 @@ bool state_store_consume_dtc_read_request(void)
     if (lock() != ESP_OK) return false;
     bool was_requested = s_dtc_read_requested;
     s_dtc_read_requested = false;
+    unlock();
+    return was_requested;
+}
+
+esp_err_t state_store_request_dtc_clear(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_dtc_clear_requested = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_consume_dtc_clear_request(void)
+{
+    if (lock() != ESP_OK) return false;
+    bool was_requested = s_dtc_clear_requested;
+    s_dtc_clear_requested = false;
     unlock();
     return was_requested;
 }

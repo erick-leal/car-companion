@@ -332,11 +332,13 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    - ~~**Viaje**~~ — hecho el 22 ago: lee `storage_get_trip*` y navega entre
      viajes guardados (prev/next). **Falta probar con un viaje real completo**
      (hasta ahora solo se vio el estado "SIN VIAJES").
-   - ~~**Fallas (DTC)**~~ — hecho el 22 ago: lee códigos con modo 03 vía el
-     patrón "buzón" en `state_store` (ver arriba). Falta borrarlos (modo 04) —
-     no implementado todavía, no hay botón para eso. **Falta probar leyendo
-     un código real** (hasta ahora solo se vieron los estados "sin fallas" y
-     "sin conexión OBD").
+   - ~~**Fallas (DTC)**~~ — hecho el 22 ago: lee códigos con modo 03 y ahora
+     también los borra con modo 04 (mismo patrón "buzón" en `state_store`,
+     duplicado para `dtc_clear`). Si el ECU tenía una falla realmente activa
+     (no solo histórica), el código puede volver a aparecer en la próxima
+     lectura — borrar limpia el registro, no la causa. **Falta probar de
+     punta a punta con un código real** (leer, borrar, confirmar que
+     desaparece o vuelve si la falla sigue activa).
    - ~~**Diagnóstico**~~ — hecho el 22 ago: PIDs crudos que no tienen tarjeta
      en el dashboard (carga motor, temp admisión/ambiente, presión
      barométrica, presión de riel) + estado de conexión y hace cuánto llegó
