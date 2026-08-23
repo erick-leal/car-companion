@@ -148,10 +148,15 @@ Menú → **Mantenimiento**.
 - **Con cada viaje real** (>5 min), ambos contadores (aceite y filtro)
   deberían bajar en la misma proporción que la distancia manejada — se
   restan automáticamente, no hace falta tocar nada.
-- **Botón "LISTO"**: resetea esa fila (aceite o filtro, según cuál se
-  toque) al intervalo completo. No pide confirmación — si se toca por error
-  no hay forma de deshacerlo desde la pantalla, solo importa si estabas
-  cerca del cambio real.
+- **Botón "CAMBIO HOY"** (antes "LISTO", rediseñado el 22 ago tras un error
+  real de UX en la primera prueba): resetea esa fila (aceite o filtro,
+  según cuál se toque) al intervalo completo. Ahora vive en su propia fila,
+  separado de los botones de ajuste, en **rojo** en vez de celeste, y pide
+  **doble toque**: el primer toque no resetea nada, solo cambia el botón a
+  "SEGURO? TOCA" por ~5 segundos — recién el segundo toque en esa ventana
+  confirma. Si no se toca de nuevo a tiempo, se desarma solo y vuelve a
+  "CAMBIO HOY" sin haber hecho nada. Probar explícitamente: tocar una vez y
+  esperar 5s sin tocar de nuevo → nada debería cambiar.
 - **Colores**: verde con más de 1000km restantes, amarillo con 1000 o
   menos, rojo con "VENCIDO hace X km" si ya se pasó.
 - Los intervalos de partida (10.000 km para ambos) son estimaciones — no
@@ -228,10 +233,10 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
 - [ ] Diagnóstico: confirmar que "ACTUALIZADO" se mantiene bajo con el auto
       conectado, y que los PIDs nuevos (carga motor, temps, presiones)
       tienen sentido.
-- [ ] Mantenimiento: confirmar que los 5 botones por fila entran bien en
-      pantalla, que ajustar con -1K/-100/+100/+1K calibra bien el contador
-      de aceite y de filtro por separado, y que "LISTO" resetea cada uno
-      correctamente.
+- [ ] Mantenimiento: confirmar que los botones entran bien en pantalla, que
+      ajustar con -1K/-100/+100/+1K calibra bien el contador de aceite y de
+      filtro por separado, y que "CAMBIO HOY" pide el doble toque antes de
+      resetear (un solo toque no debería cambiar nada).
 - [ ] Reconexión real: confirmar que al arrancar el motor (donde el Vgate
       típicamente se resetea por la baja de tensión), el dashboard pasa por
       "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado

@@ -389,16 +389,28 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
      **independientes** (aceite y filtro no siempre se cambian juntos) que
      se pueden **ajustar a mano** desde la pantalla con botones -1K/-100/
      +100/+1K, para calibrar contra el odómetro real del auto. Cada viaje
-     real resta su distancia de ambos contadores; "LISTO" resetea uno al
+     real resta su distancia de ambos contadores; un botón resetea uno al
      intervalo completo (`STORAGE_OIL_CHANGE_INTERVAL_KM` /
      `STORAGE_FILTER_CHANGE_INTERVAL_KM`, ambos 10.000 km de partida,
      ajustables). El cambio de formato de `/storage/maint.bin` hace que el
      archivo viejo no calce en tamaño — se detecta y se reinicia con un
      `ESP_LOGW` explicando por qué (confirmado en hardware: perdió el
      odómetro propio acumulado de 18.6km, pero **no** los viajes guardados,
-     que viven en un archivo aparte). **Falta probar los botones +/- en la
-     pantalla real** (compilado y flasheado, pero el layout de 5 botones por
-     fila en 320px de ancho no se verificó a ojo en el M5 todavía).
+     que viven en un archivo aparte).
+
+     **Bug de UX real encontrado el mismo día usando la v1 en el auto:**
+     Erick ajustó el contador a "faltan 1000km" con los botones de paso,
+     tocó lo que entonces se llamaba "LISTO" (pensando que confirmaba el
+     ajuste) y el contador saltó de vuelta a 10.000km — el botón estaba
+     pegado a los de ajuste, con el mismo color y un nombre ambiguo. Fix
+     (decidido con el usuario vía preguntas de diseño): el botón de reset
+     ahora vive en su propia fila separada, en rojo (`CAMBIO HOY` en vez de
+     `LISTO`), y pide **doble toque** — el primero solo arma el botón
+     ("SEGURO? TOCA") por 5s, recién el segundo confirma; si no se toca de
+     nuevo a tiempo se desarma solo. Ver `confirm_btn_event_cb` en `ui.c`.
+     **Falta probar en la pantalla real** que los botones entran bien en
+     320px de ancho y que el flujo de doble toque se siente natural (todo
+     esto se compiló y flasheó, pero no se vio a ojo en el M5 todavía).
 8. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
    velocidad siempre 0 y boost sin carga de turbo real).
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el

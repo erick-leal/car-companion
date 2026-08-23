@@ -112,6 +112,7 @@ static void build_dtc_screen(void);
 static void build_trip_screen(void);
 static void build_diag_screen(void);
 static void build_maint_screen(void);
+static void maint_cancel_pending_confirms(void);
 
 /* Crea una tarjeta con titulo chico arriba y valor grande abajo. Devuelve el
  * label del valor, que es lo unico que se actualiza despues. */
@@ -417,6 +418,14 @@ static void build_main_screen(void)
 static void back_to_menu_event_cb(lv_event_t *e)
 {
     (void)e;
+    /* Si habia un boton "CAMBIO HOY" armado esperando el segundo toque (ver
+     * pantalla de Mantenimiento), cancelar el timer de desarme ahora: ese
+     * timer sigue vivo aunque cambiemos de pantalla (no esta atado al arbol
+     * de objetos de LVGL), y si llegara a disparar despues de que
+     * lv_obj_clean() ya borro el boton/label que apunta, seria un
+     * use-after-free real. Barato de llamar siempre, es no-op si no habia
+     * nada armado. */
+    maint_cancel_pending_confirms();
     build_menu_screen();
 }
 
@@ -782,23 +791,118 @@ static void maint_step_event_cb(lv_event_t *e)
     render_maint_screen_content();
 }
 
-static void marcar_cambio_aceite_event_cb(lv_event_t *e)
+/* --- Boton "CAMBIO HOY" (resetea un contador al intervalo completo) ---
+ *
+ * BUG DE UX REAL (22 ago, primera manejada de prueba): estaba pegado a los
+ * botones de ajuste -1K/-100/+100/+1K, con el mismo color y el nombre
+ * "LISTO" — Erick lo toco pensando que "confirmaba" el ajuste que acababa
+ * de hacer, y en cambio le reseteo el contador entero, perdiendo la
+ * calibracion. Fix con tres partes:
+ *   1. Fila propia, separada de los botones de ajuste (no se confunde con
+ *      "un boton mas de ajustar").
+ *   2. Color distinto (rojo en vez de celeste) y nombre mas claro
+ *      ("CAMBIO HOY" en vez de "LISTO") para que se note que es una accion
+ *      distinta y mas fuerte.
+ *   3. Confirmacion de doble toque: el primer toque NO resetea nada, solo
+ *      arma el boton ("SEGURO? TOCA") por unos segundos; recien el segundo
+ *      toque en esa ventana confirma. Si no se toca de nuevo a tiempo, se
+ *      desarma solo. Elegido por el usuario por sobre "mantener presionado"
+ *      o "sin confirmacion" — ver discusion en el chat del 22 ago.
+ */
+#define MAINT_CONFIRM_TIMEOUT_MS 5000
+
+typedef struct {
+    bool        is_filter;
+    bool        armed;
+    lv_obj_t   *btn;
+    lv_obj_t   *label;
+    lv_timer_t *disarm_timer;
+} confirm_btn_state_t;
+
+static confirm_btn_state_t s_oil_confirm;
+static confirm_btn_state_t s_filter_confirm;
+
+static void confirm_btn_set_idle(confirm_btn_state_t *cs)
 {
-    (void)e;
-    storage_mark_oil_change_done();
+    cs->armed = false;
+    if (cs->disarm_timer != NULL) {
+        lv_timer_del(cs->disarm_timer);
+        cs->disarm_timer = NULL;
+    }
+    if (cs->label != NULL) {
+        lv_label_set_text(cs->label, LV_SYMBOL_OK " CAMBIO HOY");
+    }
+    if (cs->btn != NULL) {
+        lv_obj_set_style_bg_color(cs->btn, COL_CARD, 0);
+    }
+    if (cs->label != NULL) {
+        lv_obj_set_style_text_color(cs->label, COL_DANGER, 0); // rojo aun en reposo: distingue esta fila de los pasos +/- (celestes)
+    }
+}
+
+static void confirm_btn_set_armed(confirm_btn_state_t *cs)
+{
+    cs->armed = true;
+    lv_label_set_text(cs->label, "SEGURO? TOCA");
+    lv_obj_set_style_bg_color(cs->btn, COL_DANGER, 0);
+    lv_obj_set_style_text_color(cs->label, COL_BG, 0);
+}
+
+static void confirm_disarm_timer_cb(lv_timer_t *timer)
+{
+    confirm_btn_state_t *cs = (confirm_btn_state_t *)timer->user_data;
+    cs->disarm_timer = NULL; // el timer se borra solo al terminar (repeat_count=1), no llamar lv_timer_del de nuevo
+    confirm_btn_set_idle(cs);
+}
+
+static void confirm_btn_event_cb(lv_event_t *e)
+{
+    confirm_btn_state_t *cs = (confirm_btn_state_t *)lv_event_get_user_data(e);
+
+    if (!cs->armed) {
+        confirm_btn_set_armed(cs);
+        cs->disarm_timer = lv_timer_create(confirm_disarm_timer_cb, MAINT_CONFIRM_TIMEOUT_MS, cs);
+        lv_timer_set_repeat_count(cs->disarm_timer, 1);
+        return;
+    }
+
+    /* Segundo toque dentro de la ventana: confirma de verdad. */
+    if (cs->is_filter) {
+        storage_mark_filter_change_done();
+    } else {
+        storage_mark_oil_change_done();
+    }
+    confirm_btn_set_idle(cs);
     render_maint_screen_content();
 }
 
-static void marcar_cambio_filtro_event_cb(lv_event_t *e)
+/* Cancela cualquier confirmacion armada y borra su timer — hay que llamar
+ * esto SIEMPRE que se abandone la pantalla de Mantenimiento con un boton
+ * armado, porque el timer de desarme no esta atado al arbol de objetos de
+ * LVGL: si disparara despues de que lv_obj_clean() ya borro btn/label, seria
+ * un use-after-free real. Llamado desde back_to_menu_event_cb. */
+static void maint_cancel_pending_confirms(void)
 {
-    (void)e;
-    storage_mark_filter_change_done();
-    render_maint_screen_content();
+    if (s_oil_confirm.disarm_timer != NULL) {
+        lv_timer_del(s_oil_confirm.disarm_timer);
+        s_oil_confirm.disarm_timer = NULL;
+    }
+    s_oil_confirm.armed = false;
+    s_oil_confirm.btn = NULL;
+    s_oil_confirm.label = NULL;
+
+    if (s_filter_confirm.disarm_timer != NULL) {
+        lv_timer_del(s_filter_confirm.disarm_timer);
+        s_filter_confirm.disarm_timer = NULL;
+    }
+    s_filter_confirm.armed = false;
+    s_filter_confirm.btn = NULL;
+    s_filter_confirm.label = NULL;
 }
 
-/* Boton chico reutilizado para los pasos +/- y el "LISTO" de cada fila —
- * mismo estilo visual que el resto de la app (COL_CARD + texto COL_ACCENT),
- * evita repetir 6 lineas de setup de LVGL por boton. */
+/* Boton chico reutilizado para los pasos +/- de cada fila — mismo estilo
+ * visual que el resto de la app (COL_CARD + texto COL_ACCENT), evita
+ * repetir 6 lineas de setup de LVGL por boton. */
 static lv_obj_t *make_step_btn(lv_obj_t *parent, int x, int y, int w,
                                 const char *text, lv_event_cb_t cb, const void *user_data)
 {
@@ -815,6 +919,22 @@ static lv_obj_t *make_step_btn(lv_obj_t *parent, int x, int y, int w,
     lv_label_set_text(lbl, text);
     lv_obj_center(lbl);
     return btn;
+}
+
+/* Arma un boton de doble-toque en su propia fila (ancho fijo, no ocupa todo
+ * el ancho de pantalla para no parecer el CTA principal — se usa poco). */
+static void make_confirm_btn(lv_obj_t *parent, int x, int y, int w, confirm_btn_state_t *cs)
+{
+    cs->btn = lv_btn_create(parent);
+    lv_obj_set_size(cs->btn, w, 24);
+    lv_obj_set_pos(cs->btn, x, y);
+    lv_obj_set_style_radius(cs->btn, 5, 0);
+    lv_obj_set_style_shadow_width(cs->btn, 0, 0);
+    lv_obj_add_event_cb(cs->btn, confirm_btn_event_cb, LV_EVENT_CLICKED, cs);
+    cs->label = lv_label_create(cs->btn);
+    lv_obj_set_style_text_font(cs->label, &lv_font_montserrat_14, 0);
+    lv_obj_center(cs->label);
+    confirm_btn_set_idle(cs);
 }
 
 static void build_maint_screen(void)
@@ -841,32 +961,40 @@ static void build_maint_screen(void)
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
     lv_obj_center(back_lbl);
 
-    /* Fila ACEITE: estado (y=34) + botones de ajuste (y=58). */
+    /* Cualquier confirmacion armada de una visita anterior a esta pantalla
+     * ya deberia estar cancelada (ver back_to_menu_event_cb), pero por las
+     * dudas: nunca arrancar con btn/label apuntando a widgets viejos. */
+    maint_cancel_pending_confirms();
+
+    /* Fila ACEITE: estado (y=34), pasos de ajuste (y=58), CAMBIO HOY en su
+     * propia fila separada (y=84) — ver nota grande arriba sobre por que. */
     s_lbl_oil_status = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_oil_status, &lv_font_montserrat_14, 0);
     lv_obj_align(s_lbl_oil_status, LV_ALIGN_TOP_LEFT, 6, 34);
 
-    make_step_btn(scr, 6,   58, 48, "-1K",  maint_step_event_cb, &s_oil_step_m1000);
-    make_step_btn(scr, 58,  58, 52, "-100", maint_step_event_cb, &s_oil_step_m100);
-    make_step_btn(scr, 114, 58, 52, "+100", maint_step_event_cb, &s_oil_step_p100);
-    make_step_btn(scr, 170, 58, 48, "+1K",  maint_step_event_cb, &s_oil_step_p1000);
-    make_step_btn(scr, 222, 58, 92, LV_SYMBOL_OK " LISTO", marcar_cambio_aceite_event_cb, NULL);
+    make_step_btn(scr, 6,   58, 70, "-1K",  maint_step_event_cb, &s_oil_step_m1000);
+    make_step_btn(scr, 80,  58, 70, "-100", maint_step_event_cb, &s_oil_step_m100);
+    make_step_btn(scr, 154, 58, 70, "+100", maint_step_event_cb, &s_oil_step_p100);
+    make_step_btn(scr, 228, 58, 70, "+1K",  maint_step_event_cb, &s_oil_step_p1000);
+    s_oil_confirm.is_filter = false;
+    make_confirm_btn(scr, 6, 86, 150, &s_oil_confirm);
 
     /* Fila FILTRO: mismo layout, corrido hacia abajo. */
     s_lbl_filter_status = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_filter_status, &lv_font_montserrat_14, 0);
-    lv_obj_align(s_lbl_filter_status, LV_ALIGN_TOP_LEFT, 6, 96);
+    lv_obj_align(s_lbl_filter_status, LV_ALIGN_TOP_LEFT, 6, 118);
 
-    make_step_btn(scr, 6,   120, 48, "-1K",  maint_step_event_cb, &s_filter_step_m1000);
-    make_step_btn(scr, 58,  120, 52, "-100", maint_step_event_cb, &s_filter_step_m100);
-    make_step_btn(scr, 114, 120, 52, "+100", maint_step_event_cb, &s_filter_step_p100);
-    make_step_btn(scr, 170, 120, 48, "+1K",  maint_step_event_cb, &s_filter_step_p1000);
-    make_step_btn(scr, 222, 120, 92, LV_SYMBOL_OK " LISTO", marcar_cambio_filtro_event_cb, NULL);
+    make_step_btn(scr, 6,   142, 70, "-1K",  maint_step_event_cb, &s_filter_step_m1000);
+    make_step_btn(scr, 80,  142, 70, "-100", maint_step_event_cb, &s_filter_step_m100);
+    make_step_btn(scr, 154, 142, 70, "+100", maint_step_event_cb, &s_filter_step_p100);
+    make_step_btn(scr, 228, 142, 70, "+1K",  maint_step_event_cb, &s_filter_step_p1000);
+    s_filter_confirm.is_filter = true;
+    make_confirm_btn(scr, 6, 170, 150, &s_filter_confirm);
 
     s_lbl_maint_odometer = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_maint_odometer, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_lbl_maint_odometer, COL_CAPTION, 0);
-    lv_obj_align(s_lbl_maint_odometer, LV_ALIGN_TOP_LEFT, 6, 158);
+    lv_obj_align(s_lbl_maint_odometer, LV_ALIGN_TOP_LEFT, 6, 200);
 
     render_maint_screen_content();
 }
