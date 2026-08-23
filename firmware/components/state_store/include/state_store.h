@@ -85,6 +85,14 @@ esp_err_t state_store_request_dtc_clear(void);
 bool state_store_consume_dtc_clear_request(void);
 
 /**
+ * Mismo patron de buzon, para el boton de sincronizar a mano en la pantalla
+ * de Viaje — `connectivity` ya sincroniza solo cada 30s en segundo plano,
+ * esto solo adelanta el proximo intento sin esperar ese ciclo.
+ */
+esp_err_t state_store_request_sync(void);
+bool state_store_consume_sync_request(void);
+
+/**
  * Marca data_valid=false (el adaptador OBD se desconecto — reason real de
  * manejo: el Vgate se resetea con la caida de tension al arrancar el motor,
  * o queda fuera de rango momentaneamente). Deja el resto de los campos

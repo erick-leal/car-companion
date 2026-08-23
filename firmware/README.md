@@ -327,14 +327,15 @@ tanda. `storage` ahora guarda un cursor real (`/storage/sync.bin`,
 `storage_mark_trips_synced`) — antes `storage_get_pending_sync_count`
 siempre devolvía el total, nunca se había sincronizado nada.
 
-**Setup manual necesario (no lo puedo hacer yo por vos):**
+**Setup manual necesario (no lo puedo hacer yo por vos):** el archivo
+`firmware/components/connectivity/include/connectivity_secrets.h` ya existe
+(con valores de ejemplo, para que compile) — completalo con tu WiFi de casa
+y tu email/contraseña reales del backend (ese archivo no se sube a git).
+**No me pases la contraseña por acá** — editalo vos directo con un editor de
+texto, parado en la raíz del repo:
 ```bash
-cp firmware/components/connectivity/include/connectivity_secrets.example.h \
-   firmware/components/connectivity/include/connectivity_secrets.h
+open -e firmware/components/connectivity/include/connectivity_secrets.h
 ```
-y completar `connectivity_secrets.h` con tu WiFi de casa y tu email/contraseña
-reales del backend (ese archivo no se sube a git). **No me pases la
-contraseña por acá** — editalo vos directo con un editor de texto.
 
 **Decisiones tomadas con el usuario (23 ago, ver conversación):**
 - Auth: login hardcodeado (no token de dispositivo separado — eso queda
@@ -369,6 +370,16 @@ login/sync real, que todavía no se probó — falta que Erick complete
   asume `connectivity.c` es correcto. **Lo que falta probar de punta a
   punta es el login/registro/sync real**, una vez que
   `connectivity_secrets.h` tenga credenciales reales.
+
+**Botón manual de sync (23 ago)**: la pantalla de Viaje suma un botón solo
+con el ícono de sincronizar (arriba a la derecha, `LV_SYMBOL_REFRESH`, sin
+texto — mismo criterio que el ícono de LEER en Fallas), que dispara
+`state_store_request_sync()`. Mismo patrón "buzón" que la lectura/borrado
+de DTC: `connectivity_task` lo consulta cada 1s (barato, un booleano) además
+de su chequeo automático cada 30s, así un toque manual no tiene que esperar
+todo el ciclo. Layout de Viaje también se reordenó: `VOLVER` y `◀ / ▶` bajan
+al pie de la pantalla, dejando la esquina superior derecha libre para el
+botón de sync (pedido real del 23 ago: se sentía apretado arriba).
 
 ## Robustez para manejo real (22 ago)
 

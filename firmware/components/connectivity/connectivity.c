@@ -1,6 +1,7 @@
 #include "connectivity.h"
 #include "connectivity_secrets.h"
 #include "storage.h"
+#include "state_store.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -384,12 +385,25 @@ esp_err_t connectivity_sync_trip_history(void)
 
 /* --- Tarea de fondo --- */
 
+/* El loop principal revisa cada SYNC_CHECK_INTERVAL_MS (30s), pero tambien
+ * consulta el buzon de "sincronizar ahora" (boton manual en la pantalla de
+ * Viaje) cada 1s — asi un toque del usuario no tiene que esperar hasta 30s
+ * para que se note. Consultar el buzon cada 1s es gratis (un booleano), el
+ * costo real (login+POST) solo se paga cuando de verdad corresponde. */
 static void connectivity_task(void *arg)
 {
     (void)arg;
+    int64_t last_periodic_check_us = 0;
     while (1) {
-        connectivity_sync_trip_history(); // no-op instantaneo y gratis si no hay WiFi o no hay nada pendiente
-        vTaskDelay(pdMS_TO_TICKS(SYNC_CHECK_INTERVAL_MS));
+        bool manual_requested = state_store_consume_sync_request();
+        int64_t now = esp_timer_get_time();
+        bool periodic_due = (now - last_periodic_check_us) >= (int64_t)SYNC_CHECK_INTERVAL_MS * 1000;
+
+        if (manual_requested || periodic_due) {
+            connectivity_sync_trip_history(); // no-op instantaneo y gratis si no hay WiFi o no hay nada pendiente
+            last_periodic_check_us = now;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 

@@ -8,20 +8,24 @@ que capturar el log serial (ver la última sección) y revisarlo.
 ## Antes de salir
 
 0. **Una sola vez**, para que la sincronización con el backend funcione
-   (ver sección 6 más abajo): copiar la plantilla de credenciales y
-   completarla vos mismo con un editor de texto (no se la pases al asistente
-   por chat):
+   (ver sección 6 más abajo): el archivo `connectivity_secrets.h` ya existe
+   (creado con valores de ejemplo para que compile) — hay que editarlo con
+   tus datos reales, con un editor de texto (no se los pases al asistente
+   por chat). Parado en la **raíz del repo** (`car-companion/`, no adentro
+   de `firmware/`):
    ```bash
-   cp firmware/components/connectivity/include/connectivity_secrets.example.h \
-      firmware/components/connectivity/include/connectivity_secrets.h
+   open -e firmware/components/connectivity/include/connectivity_secrets.h
    ```
-   Editar `connectivity_secrets.h` con tu WiFi de casa (`WIFI_SSID`,
-   `WIFI_PASSWORD`) y tu email/contraseña reales del backend
-   (`BACKEND_EMAIL`, `BACKEND_PASSWORD`). Ese archivo no se sube a git. Si
-   no lo completás, el dispositivo sigue funcionando normal como gauge OBD
-   — solo no va a poder sincronizar viajes (confirmado en hardware: con
-   credenciales de ejemplo, intenta conectar WiFi, falla, reintenta solo,
-   sin crashear nada).
+   o si ya estás parado adentro de `firmware/`:
+   ```bash
+   open -e components/connectivity/include/connectivity_secrets.h
+   ```
+   Completar `WIFI_SSID`/`WIFI_PASSWORD` (tu WiFi de casa) y
+   `BACKEND_EMAIL`/`BACKEND_PASSWORD` (tu cuenta real del backend). Ese
+   archivo no se sube a git. Si no lo completás, el dispositivo sigue
+   funcionando normal como gauge OBD — solo no va a poder sincronizar
+   viajes (confirmado en hardware: con credenciales de ejemplo, intenta
+   conectar WiFi, falla, reintenta solo, sin crashear nada).
 1. Con el M5 conectado por USB a la Mac, flashear la última versión:
    ```bash
    source ~/esp/esp-idf/export.sh
@@ -120,6 +124,14 @@ Menú → **Viaje**.
   razonables comparadas con lo que realmente manejaste? No van a ser
   exactas (no hay GPS, la distancia se estima con velocidad), pero no
   deberían estar completamente fuera de rango.
+- **Layout rediseñado (23 ago)**: "VOLVER" y los botones **◀ / ▶** ahora
+  están abajo (antes arriba, se sentían apretados junto al botón nuevo de
+  sync). Arriba a la izquierda queda el texto "VIAJE N/TOTAL", y arriba a
+  la derecha un botón solo con el ícono de sincronizar (sin texto). Tocarlo
+  le pide a `connectivity` que intente sincronizar ya (en vez de esperar
+  hasta 30s del ciclo automático) — no hay feedback visual todavía de si
+  funcionó o no, hay que mirar el log serial (sección 6) para confirmarlo.
+  Verificar que nada se vea cortado o superpuesto con este layout nuevo.
 
 ## 4. Diagnóstico (pantalla nueva, 22 ago)
 

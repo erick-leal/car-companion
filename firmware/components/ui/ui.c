@@ -657,6 +657,16 @@ static void trip_next_event_cb(lv_event_t *e)
     render_trip_screen_content();
 }
 
+static void sync_now_event_cb(lv_event_t *e)
+{
+    (void)e;
+    /* Fire-and-forget: connectivity ya sincroniza solo en segundo plano cada
+     * 30s, esto solo pide que el proximo intento sea ya (ver
+     * connectivity_task). No hay feedback visual todavia (exito/error) —
+     * si hace falta, revisar el log serial (ver docs/guia-de-pruebas.md). */
+    state_store_request_sync();
+}
+
 static void build_trip_screen(void)
 {
     lv_obj_t *scr = lv_scr_act();
@@ -668,9 +678,30 @@ static void build_trip_screen(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* VOLVER y los pasos de pagina < > van abajo (pedido real del 23 ago):
+     * dejan libre la esquina superior derecha para el boton de sync, solo
+     * icono, sin texto, para no gastar espacio de mas (mismo criterio que
+     * el icono de LEER en Fallas). */
+    lv_obj_t *sync_btn = lv_btn_create(scr);
+    lv_obj_set_size(sync_btn, 36, 24);
+    lv_obj_set_pos(sync_btn, 278, 4);
+    lv_obj_set_style_bg_color(sync_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(sync_btn, 5, 0);
+    lv_obj_set_style_shadow_width(sync_btn, 0, 0);
+    lv_obj_add_event_cb(sync_btn, sync_now_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sync_lbl = lv_label_create(sync_btn);
+    lv_obj_set_style_text_color(sync_lbl, COL_ACCENT, 0);
+    lv_label_set_text(sync_lbl, LV_SYMBOL_REFRESH);
+    lv_obj_center(sync_lbl);
+
+    s_lbl_trip_header = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_trip_header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_trip_header, COL_CAPTION, 0);
+    lv_obj_align(s_lbl_trip_header, LV_ALIGN_TOP_LEFT, 8, 8);
+
     lv_obj_t *back = lv_btn_create(scr);
     lv_obj_set_size(back, 88, 24);
-    lv_obj_set_pos(back, 6, 4);
+    lv_obj_set_pos(back, 6, 206);
     lv_obj_set_style_bg_color(back, COL_CARD, 0);
     lv_obj_set_style_radius(back, 5, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
@@ -683,7 +714,7 @@ static void build_trip_screen(void)
 
     lv_obj_t *prev_btn = lv_btn_create(scr);
     lv_obj_set_size(prev_btn, 44, 24);
-    lv_obj_set_pos(prev_btn, 100, 4);
+    lv_obj_set_pos(prev_btn, 100, 206);
     lv_obj_set_style_bg_color(prev_btn, COL_CARD, 0);
     lv_obj_set_style_radius(prev_btn, 5, 0);
     lv_obj_set_style_shadow_width(prev_btn, 0, 0);
@@ -695,7 +726,7 @@ static void build_trip_screen(void)
 
     lv_obj_t *next_btn = lv_btn_create(scr);
     lv_obj_set_size(next_btn, 44, 24);
-    lv_obj_set_pos(next_btn, 150, 4);
+    lv_obj_set_pos(next_btn, 150, 206);
     lv_obj_set_style_bg_color(next_btn, COL_CARD, 0);
     lv_obj_set_style_radius(next_btn, 5, 0);
     lv_obj_set_style_shadow_width(next_btn, 0, 0);
@@ -704,11 +735,6 @@ static void build_trip_screen(void)
     lv_obj_set_style_text_color(next_lbl, COL_ACCENT, 0);
     lv_label_set_text(next_lbl, LV_SYMBOL_RIGHT);
     lv_obj_center(next_lbl);
-
-    s_lbl_trip_header = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_trip_header, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_lbl_trip_header, COL_CAPTION, 0);
-    lv_obj_align(s_lbl_trip_header, LV_ALIGN_TOP_RIGHT, -8, 8);
 
     s_lbl_trip_body = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_trip_body, &lv_font_montserrat_14, 0);

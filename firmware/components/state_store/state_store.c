@@ -354,3 +354,23 @@ bool state_store_consume_dtc_clear_request(void)
     unlock();
     return was_requested;
 }
+
+static bool s_sync_requested;
+
+esp_err_t state_store_request_sync(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_sync_requested = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_consume_sync_request(void)
+{
+    if (lock() != ESP_OK) return false;
+    bool was_requested = s_sync_requested;
+    s_sync_requested = false;
+    unlock();
+    return was_requested;
+}
