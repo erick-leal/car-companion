@@ -81,3 +81,33 @@ int pid_math_parse_atrv(const char *text, float *out_volts)
     *out_volts = volts;
     return 1;
 }
+
+int pid_math_decode_dtc(uint8_t hi, uint8_t lo, char out[6])
+{
+    if (hi == 0 && lo == 0) {
+        return 0; // "0000" es relleno de "sin codigo", no un DTC real
+    }
+    static const char sys_chars[4] = { 'P', 'C', 'B', 'U' };
+    static const char hex_digits[16] = "0123456789ABCDEF";
+
+    out[0] = sys_chars[(hi >> 6) & 0x03];
+    out[1] = hex_digits[(hi >> 4) & 0x03]; // solo 0-3 segun el estandar
+    out[2] = hex_digits[hi & 0x0F];
+    out[3] = hex_digits[(lo >> 4) & 0x0F];
+    out[4] = hex_digits[lo & 0x0F];
+    out[5] = '\0';
+    return 1;
+}
+
+int pid_math_parse_dtc_list(const uint8_t *bytes, int n, char out_codes[][6], int max_codes)
+{
+    if (n <= 0) return 0;
+    int i = (bytes[0] == 0x43 || bytes[0] == 0x47) ? 1 : 0; // saltar header modo 03/07 si esta
+    int count = 0;
+    for (; i + 1 < n && count < max_codes; i += 2) {
+        if (pid_math_decode_dtc(bytes[i], bytes[i + 1], out_codes[count])) {
+            count++;
+        }
+    }
+    return count;
+}

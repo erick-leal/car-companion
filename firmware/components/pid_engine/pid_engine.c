@@ -163,6 +163,43 @@ static void handle_atrv_response(const uint8_t *raw, size_t raw_len, void *ctx)
     pid_engine_parse_atrv_response(text);
 }
 
+static void handle_dtc_response(const uint8_t *raw, size_t raw_len, void *ctx)
+{
+    (void)ctx;
+    char text[128];
+    size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    memcpy(text, raw, copy_len);
+    text[copy_len] = '\0';
+
+    if (strstr(text, "NO DATA") || strstr(text, "ERROR") || strstr(text, "UNABLE")) {
+        ESP_LOGW(TAG, "lectura de DTC: adaptador respondio '%s'", text);
+        state_store_set_dtc_read_in_progress(false);
+        return;
+    }
+
+    uint8_t bytes[32];
+    int n = pid_math_ascii_hex_to_bytes(text, bytes, sizeof(bytes));
+    if (n < 1) {
+        ESP_LOGW(TAG, "lectura de DTC: respuesta no parseable '%s'", text);
+        state_store_set_dtc_read_in_progress(false);
+        return;
+    }
+
+    char codes[STATE_STORE_MAX_DTC][6];
+    int count = pid_math_parse_dtc_list(bytes, n, codes, STATE_STORE_MAX_DTC);
+    state_store_set_dtc_codes(codes, (uint8_t)count);
+    ESP_LOGI(TAG, "lectura de DTC: %d codigo(s) encontrados", count);
+}
+
+esp_err_t pid_engine_read_dtc_codes(void)
+{
+    if (!obd_driver_is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    state_store_set_dtc_read_in_progress(true);
+    return obd_driver_send_command("03", handle_dtc_response, NULL);
+}
+
 /* DEBUG temporal: descubrir que PIDs estandar soporta realmente esta ECU
  * (Maxus T60), en vez de ir probando a ciegas. El modo 01 PID 0x00 devuelve
  * un bitmask de 32 bits con los PIDs 0x01-0x20 soportados; 0x20 idem para
@@ -204,6 +241,14 @@ static void poll_task(void *arg)
         if (!discovered) {
             discover_supported_pids();
             discovered = true;
+        }
+
+        /* Pedido de lectura de DTC desde ui (via el "buzon" de state_store,
+         * ver nota en state_store.h). Se atiende ANTES del polling normal de
+         * este ciclo para que la pantalla de Fallas no espere una vuelta
+         * completa de 12 PIDs (~2s) sin necesidad. */
+        if (state_store_consume_dtc_read_request()) {
+            pid_engine_read_dtc_codes();
         }
 
         for (size_t i = 0; i < POLL_LIST_LEN; i++) {

@@ -74,6 +74,63 @@ int main(void)
     ASSERT_EQ_INT("MIL bit7=1 -> encendido", 1, pid_math_mil_on(0x80));
     ASSERT_EQ_INT("MIL bit7=0 -> apagado", 0, pid_math_mil_on(0x07));
 
+    // Decodificar DTC: P0301 = fallo de encendido cilindro 1 (ejemplo real y muy comun)
+    // hi=0x03 -> sistema P (bits7:6=00), digito1=0 (bits5:4=00), digito2=3 (bits3:0=0011)
+    // lo=0x01 -> digito3=0, digito4=1
+    {
+        char code[6];
+        int ok = pid_math_decode_dtc(0x03, 0x01, code);
+        ASSERT_EQ_INT("decode_dtc devuelve 1 para codigo real", 1, ok);
+        if (strcmp(code, "P0301") != 0) {
+            printf("FAIL: decode_dtc 0x03 0x01 -> esperado P0301, obtuvo %s\n", code);
+            g_failures++;
+        } else {
+            printf("OK:   decode_dtc 0x03 0x01 == P0301\n");
+        }
+    }
+    // C1201, B0001, U0100 — un codigo de cada sistema, para confirmar los 4 prefijos
+    {
+        char code[6];
+        pid_math_decode_dtc(0x52, 0x01, code); // hi=0101 0010 -> C(01) digito1=1(01) digito2=2(0010)
+        if (strcmp(code, "C1201") != 0) { printf("FAIL: decode_dtc C -> %s\n", code); g_failures++; }
+        else printf("OK:   decode_dtc sistema C -> C1201\n");
+
+        pid_math_decode_dtc(0x80, 0x01, code); // hi=1000 0000 -> B(10) digito1=0 digito2=0
+        if (strcmp(code, "B0001") != 0) { printf("FAIL: decode_dtc B -> %s\n", code); g_failures++; }
+        else printf("OK:   decode_dtc sistema B -> B0001\n");
+
+        pid_math_decode_dtc(0xC1, 0x00, code); // hi=1100 0001 -> U(11) digito1=0 digito2=1
+        if (strcmp(code, "U0100") != 0) { printf("FAIL: decode_dtc U -> %s\n", code); g_failures++; }
+        else printf("OK:   decode_dtc sistema U -> U0100\n");
+    }
+    ASSERT_EQ_INT("decode_dtc 0x00 0x00 (relleno) -> 0", 0, pid_math_decode_dtc(0, 0, (char[6]){0}));
+
+    // Lista completa: respuesta tipica de "43 03 01 00 00 01 71" (header 43,
+    // codigo P0301, relleno 0000, codigo P0171 -> 2 codigos reales)
+    {
+        uint8_t bytes[8];
+        int n = pid_math_ascii_hex_to_bytes("43 03 01 00 00 01 71", bytes, sizeof(bytes));
+        ASSERT_EQ_INT("dtc_list ascii_hex_to_bytes longitud", 7, n);
+
+        char codes[8][6];
+        int count = pid_math_parse_dtc_list(bytes, n, codes, 8);
+        ASSERT_EQ_INT("dtc_list cantidad de codigos reales", 2, count);
+        if (count == 2) {
+            if (strcmp(codes[0], "P0301") != 0) { printf("FAIL: dtc_list[0] -> %s\n", codes[0]); g_failures++; }
+            else printf("OK:   dtc_list[0] == P0301\n");
+            if (strcmp(codes[1], "P0171") != 0) { printf("FAIL: dtc_list[1] -> %s\n", codes[1]); g_failures++; }
+            else printf("OK:   dtc_list[1] == P0171\n");
+        }
+    }
+    // Sin fallas: "43 00 00" -> 0 codigos
+    {
+        uint8_t bytes[8];
+        int n = pid_math_ascii_hex_to_bytes("43 00 00", bytes, sizeof(bytes));
+        char codes[8][6];
+        int count = pid_math_parse_dtc_list(bytes, n, codes, 8);
+        ASSERT_EQ_INT("dtc_list sin fallas -> 0 codigos", 0, count);
+    }
+
     // Parseo de texto hex ASCII -> bytes (respuesta ELM327 típica)
     {
         uint8_t bytes[8];

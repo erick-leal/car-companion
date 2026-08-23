@@ -79,12 +79,15 @@ static lv_obj_t *s_lbl_fuel_val;
 static lv_obj_t *s_lbl_status;
 static lv_obj_t *s_lbl_cel;
 static lv_obj_t *s_lbl_m5batt;
+static lv_obj_t *s_lbl_dtc_body;
 
-/* true solo mientras el dashboard esta en pantalla. Al cambiar de pantalla
- * lv_obj_clean() destruye esos labels y los punteros de arriba quedan
+/* true solo mientras esa pantalla esta activa. Al cambiar de pantalla
+ * lv_obj_clean() destruye los labels de la anterior y los punteros quedan
  * colgando — on_state_change (que corre desde la tarea de pid_engine, no
- * desde la de LVGL) tiene que saber que no debe tocarlos. */
+ * desde la de LVGL) tiene que saber cual pantalla esta viva antes de tocar
+ * sus widgets. Nunca las dos a la vez: son pantallas distintas. */
 static bool s_dashboard_active;
+static bool s_dtc_screen_active;
 static bool s_subscribed;
 
 /* Las funciones build_* asumen que el lock de LVGL YA esta tomado: se llaman
@@ -94,6 +97,7 @@ static bool s_subscribed;
  * FreeRTOS no es reentrante. */
 static void build_main_screen(void);
 static void build_menu_screen(void);
+static void build_dtc_screen(void);
 
 /* Crea una tarjeta con titulo chico arriba y valor grande abajo. Devuelve el
  * label del valor, que es lo unico que se actualiza despues. */
@@ -123,19 +127,8 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h,
     return val;
 }
 
-static void on_state_change(const vehicle_state_t *state, void *ctx)
+static void update_dashboard_widgets(const vehicle_state_t *state)
 {
-    (void)ctx;
-    if (!lvgl_lock(50)) {
-        return; // se pierde esta actualizacion puntual antes que bloquear pid_engine
-    }
-    if (!s_dashboard_active) {
-        /* Estamos en el menu u otra pantalla: los widgets del dashboard ya
-         * no existen. Salir sin tocar nada. */
-        lvgl_unlock();
-        return;
-    }
-
     char buf[32];
 
     bool engine_running = state->rpm > 0;
@@ -209,7 +202,49 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     lv_obj_set_style_text_color(s_lbl_status, state->data_valid ? COL_OK : COL_CAPTION, 0);
 
     lv_label_set_text(s_lbl_cel, state->check_engine_on ? "CHECK" : "");
+}
 
+/* Arma el texto de la pantalla de Fallas a partir de state_store. Separado
+ * de update_dashboard_widgets porque las dos pantallas nunca estan activas
+ * al mismo tiempo, pero conviene poder actualizarlas independientemente. */
+static void update_dtc_widgets(const vehicle_state_t *state)
+{
+    if (s_lbl_dtc_body == NULL) return;
+
+    if (state->dtc_read_in_progress) {
+        lv_label_set_text(s_lbl_dtc_body, "Leyendo...");
+        lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+        return;
+    }
+    if (state->dtc_count == 0) {
+        /* Sin tilde a proposito: el font montserrat que usamos no incluye
+         * caracteres acentuados, salian como un cuadrado vacio en pantalla
+         * (visto en hardware real el 22 ago). */
+        lv_label_set_text(s_lbl_dtc_body, "Sin fallas.\n\nToca LEER CODIGOS\npara revisar.");
+        lv_obj_set_style_text_color(s_lbl_dtc_body, COL_OK, 0);
+        return;
+    }
+
+    char body[STATE_STORE_MAX_DTC * 7 + 1] = {0};
+    size_t off = 0;
+    for (uint8_t i = 0; i < state->dtc_count; i++) {
+        off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\n", state->dtc_codes[i]);
+    }
+    lv_label_set_text(s_lbl_dtc_body, body);
+    lv_obj_set_style_text_color(s_lbl_dtc_body, COL_DANGER, 0);
+}
+
+static void on_state_change(const vehicle_state_t *state, void *ctx)
+{
+    (void)ctx;
+    if (!lvgl_lock(50)) {
+        return; // se pierde esta actualizacion puntual antes que bloquear pid_engine
+    }
+    if (s_dashboard_active) {
+        update_dashboard_widgets(state);
+    } else if (s_dtc_screen_active) {
+        update_dtc_widgets(state);
+    }
     lvgl_unlock();
 }
 
@@ -224,6 +259,7 @@ static void build_main_screen(void)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     s_dashboard_active = true;
+    s_dtc_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -329,6 +365,7 @@ static void build_placeholder_screen(const char *titulo, const char *detalle)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     s_dashboard_active = false;
+    s_dtc_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -359,6 +396,80 @@ static void build_placeholder_screen(const char *titulo, const char *detalle)
     lv_obj_align(d, LV_ALIGN_CENTER, 0, 14);
 }
 
+static void leer_dtc_event_cb(lv_event_t *e)
+{
+    (void)e;
+
+    /* Feedback inmediato pase lo que pase — antes esto se quedaba mudo si no
+     * habia conexion OBD (el pedido se descartaba en silencio en pid_engine,
+     * sin avisar nada en pantalla). Confuso en hardware real el 22 ago. */
+    vehicle_state_t snapshot;
+    bool connected = state_store_get(&snapshot) == ESP_OK && snapshot.data_valid;
+    if (!connected) {
+        lv_label_set_text(s_lbl_dtc_body, "Sin conexion OBD.\n\nConecta el auto\ny toca de nuevo.");
+        lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+        return;
+    }
+
+    lv_label_set_text(s_lbl_dtc_body, "Leyendo...");
+    lv_obj_set_style_text_color(s_lbl_dtc_body, COL_CAPTION, 0);
+
+    /* ui no llama a pid_engine directo (regla de dependencias, ver
+     * README) — solo deja el pedido en el buzon de state_store. */
+    state_store_request_dtc_read();
+}
+
+static void build_dtc_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    s_dashboard_active = false;
+    s_dtc_screen_active = true;
+    lv_obj_set_style_bg_color(scr, COL_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_btn_create(scr);
+    lv_obj_set_size(back, 88, 24);
+    lv_obj_set_pos(back, 6, 4);
+    lv_obj_set_style_bg_color(back, COL_CARD, 0);
+    lv_obj_set_style_radius(back, 5, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, back_to_menu_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(back_lbl, COL_ACCENT, 0);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *read_btn = lv_btn_create(scr);
+    lv_obj_set_size(read_btn, 140, 24);
+    lv_obj_set_pos(read_btn, 174, 4);
+    lv_obj_set_style_bg_color(read_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(read_btn, 5, 0);
+    lv_obj_set_style_shadow_width(read_btn, 0, 0);
+    lv_obj_add_event_cb(read_btn, leer_dtc_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *read_lbl = lv_label_create(read_btn);
+    lv_obj_set_style_text_font(read_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(read_lbl, COL_ACCENT, 0);
+    lv_label_set_text(read_lbl, LV_SYMBOL_REFRESH " LEER CODIGOS");
+    lv_obj_center(read_lbl);
+
+    s_lbl_dtc_body = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_dtc_body, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(s_lbl_dtc_body, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_lbl_dtc_body, 300);
+    lv_obj_align(s_lbl_dtc_body, LV_ALIGN_TOP_MID, 0, 50);
+
+    /* Pinta el estado actual ya guardado en state_store (por si el usuario
+     * ya habia leido codigos antes y volvio a esta pantalla), sin esperar a
+     * la proxima notificacion. */
+    vehicle_state_t snapshot;
+    if (state_store_get(&snapshot) == ESP_OK) {
+        update_dtc_widgets(&snapshot);
+    }
+}
+
 /* --- Menu --- */
 
 typedef enum {
@@ -380,7 +491,7 @@ static void menu_item_event_cb(lv_event_t *e)
             build_placeholder_screen("VIAJE", "Distancia, consumo promedio, duracion");
             break;
         case MENU_FALLAS:
-            build_placeholder_screen("FALLAS", "Codigos DTC leidos del vehiculo");
+            build_dtc_screen();
             break;
         case MENU_DIAGNOSTICO:
             build_placeholder_screen("DIAGNOSTICO", "PIDs crudos y estado del adaptador");
@@ -405,6 +516,7 @@ static void build_menu_screen(void)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     s_dashboard_active = false;
+    s_dtc_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -464,7 +576,9 @@ void ui_show_trip_stats_screen(void)
 }
 void ui_show_dtc_screen(void)
 {
-    show_placeholder_locked("FALLAS", "Codigos DTC leidos del vehiculo");
+    if (!lvgl_lock(1000)) return;
+    build_dtc_screen();
+    lvgl_unlock();
 }
 void ui_show_diagnostics_screen(void)
 {

@@ -43,3 +43,11 @@ esp_err_t pid_engine_parse_mode01_response(uint8_t pid, const uint8_t *data_byte
 
 /** Parsea la respuesta de texto de "ATRV" (ej. "12.6V") para el voltaje de bateria. */
 esp_err_t pid_engine_parse_atrv_response(const char *response_text);
+
+/**
+ * Pide los codigos de falla activos (modo 03) y los escribe en state_store
+ * cuando llegue la respuesta. A diferencia de los PIDs de arriba, esto NO es
+ * parte del polling continuo — se dispara bajo pedido (ej. desde la
+ * pantalla de Fallas), porque no tiene sentido pedirlo cada 150ms.
+ */
+esp_err_t pid_engine_read_dtc_codes(void);

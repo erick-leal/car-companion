@@ -50,3 +50,25 @@ int pid_math_mil_on(uint8_t a);
  * Devuelve 1 si pudo parsear (escribe en *out_volts), 0 si el texto es inválido.
  */
 int pid_math_parse_atrv(const char *text, float *out_volts);
+
+/**
+ * Decodifica un codigo DTC (modo 03/07) de sus 2 bytes crudos al formato
+ * estandar de 5 caracteres (ej. "P0301"). Formato SAE J2012:
+ *   byte alto, bits 7:6 -> sistema (00=P poderplante, 01=C chasis,
+ *                                    10=B carroceria, 11=U red)
+ *   byte alto, bits 5:4 -> primer digito (0-3)
+ *   byte alto, bits 3:0 -> segundo digito (0-F, hex)
+ *   byte bajo           -> tercer y cuarto digito (cada nibble, hex)
+ * out debe tener al menos 6 bytes (5 caracteres + '\0'). Devuelve 1 si el
+ * par no es "0000" (que es relleno de "sin codigo", no un DTC real), 0 si
+ * era relleno y no escribio nada en out.
+ */
+int pid_math_decode_dtc(uint8_t hi, uint8_t lo, char out[6]);
+
+/**
+ * Parsea una respuesta completa de modo 03 (bytes ya convertidos, ver
+ * pid_math_ascii_hex_to_bytes) a una lista de codigos DTC de texto. Salta el
+ * byte de header (0x43) si esta presente, y los pares de relleno "0000".
+ * Devuelve la cantidad de codigos escritos en out_codes (hasta max_codes).
+ */
+int pid_math_parse_dtc_list(const uint8_t *bytes, int n, char out_codes[][6], int max_codes);

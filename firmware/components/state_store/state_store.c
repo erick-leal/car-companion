@@ -258,3 +258,56 @@ esp_err_t state_store_set_barometric_pressure(uint8_t kpa)
     notify_subscribers();
     return ESP_OK;
 }
+
+esp_err_t state_store_set_dtc_codes(const char codes[][6], uint8_t count)
+{
+    if (count > STATE_STORE_MAX_DTC) {
+        count = STATE_STORE_MAX_DTC; // recortar en vez de fallar: mejor mostrar 8 de 9 que nada
+    }
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    memset(s_state.dtc_codes, 0, sizeof(s_state.dtc_codes));
+    for (uint8_t i = 0; i < count; i++) {
+        memcpy(s_state.dtc_codes[i], codes[i], 6);
+    }
+    s_state.dtc_count = count;
+    s_state.dtc_read_in_progress = false;
+    s_state.data_valid = true;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+esp_err_t state_store_set_dtc_read_in_progress(bool in_progress)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.dtc_read_in_progress = in_progress;
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
+/* No es parte de vehicle_state_t a proposito: es un pedido de accion, no un
+ * dato del vehiculo, asi que no dispara notify_subscribers (nadie necesita
+ * "redibujar" por esto, solo pid_engine consumiendolo una vez). */
+static bool s_dtc_read_requested;
+
+esp_err_t state_store_request_dtc_read(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_dtc_read_requested = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_consume_dtc_read_request(void)
+{
+    if (lock() != ESP_OK) return false;
+    bool was_requested = s_dtc_read_requested;
+    s_dtc_read_requested = false;
+    unlock();
+    return was_requested;
+}
