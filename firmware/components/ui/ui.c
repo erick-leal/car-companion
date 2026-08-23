@@ -87,7 +87,9 @@ static lv_obj_t *s_lbl_trip_body;
 static uint32_t  s_trip_total;
 static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
 static lv_obj_t *s_lbl_diag_body;
-static lv_obj_t *s_lbl_maint_body;
+static lv_obj_t *s_lbl_oil_status;
+static lv_obj_t *s_lbl_filter_status;
+static lv_obj_t *s_lbl_maint_odometer;
 
 /* true solo mientras esa pantalla esta activa. Al cambiar de pantalla
  * lv_obj_clean() destruye los labels de la anterior y los punteros quedan
@@ -713,56 +715,106 @@ static void build_trip_screen(void)
     render_trip_screen_content();
 }
 
-/* --- Pantalla de Mantenimiento: solo cambio de aceite por ahora, calculado
- * con el odometro que `storage` va acumulando de los viajes reales. No es
- * una pantalla "en vivo": solo cambia al cerrar un viaje o marcar un
- * cambio, asi que se re-renderiza a demanda como Viaje, sin suscribirse a
- * on_state_change. */
+/* --- Pantalla de Mantenimiento: contadores de aceite y filtro, cada uno
+ * independiente (no siempre se cambian juntos, pedido real del 22 ago).
+ * Los km restantes se ajustan a mano con los botones -1K/-100/+100/+1K —
+ * este dispositivo no tiene forma de saber el odometro real del auto (el
+ * propio arranca en 0), asi que el ajuste manual es la unica forma de
+ * calibrar contra la realidad. No es una pantalla "en vivo": solo cambia al
+ * cerrar un viaje real o tocar un boton, asi que se re-renderiza a demanda
+ * como Viaje/Fallas, sin suscribirse a on_state_change. */
+
+typedef struct {
+    bool  is_filter;
+    float delta_km;
+} maint_step_t;
+
+static const maint_step_t s_oil_step_m1000    = { false, -1000.0f };
+static const maint_step_t s_oil_step_m100     = { false,  -100.0f };
+static const maint_step_t s_oil_step_p100     = { false,   100.0f };
+static const maint_step_t s_oil_step_p1000    = { false,  1000.0f };
+static const maint_step_t s_filter_step_m1000 = { true,  -1000.0f };
+static const maint_step_t s_filter_step_m100  = { true,   -100.0f };
+static const maint_step_t s_filter_step_p100  = { true,    100.0f };
+static const maint_step_t s_filter_step_p1000 = { true,   1000.0f };
+
+static void format_km_status(char *out, size_t out_size, const char *label, float remaining_km, lv_obj_t *lbl)
+{
+    lv_color_t col;
+    if (remaining_km <= 0) {
+        snprintf(out, out_size, "%s: VENCIDO hace %.0f km", label, -remaining_km);
+        col = COL_DANGER;
+    } else if (remaining_km <= 1000) {
+        snprintf(out, out_size, "%s: faltan %.0f km", label, remaining_km);
+        col = COL_WARN;
+    } else {
+        snprintf(out, out_size, "%s: faltan %.0f km", label, remaining_km);
+        col = COL_OK;
+    }
+    lv_label_set_text(lbl, out);
+    lv_obj_set_style_text_color(lbl, col, 0);
+}
+
 static void render_maint_screen_content(void)
 {
-    if (s_lbl_maint_body == NULL) return;
+    if (s_lbl_oil_status == NULL) return;
 
     maintenance_state_t m;
     storage_get_maintenance(&m);
 
-    /* odometro_at_last == 0 se interpreta como "nunca se marco un cambio"
-     * (ver storage.h) — en la practica nadie marca un cambio a exactamente
-     * 0km acumulados. */
-    bool ever_marked = m.odometer_at_last_oil_change_km > 0.0f;
-    float since_km = m.odometer_km - m.odometer_at_last_oil_change_km;
-    float remaining_km = STORAGE_OIL_CHANGE_INTERVAL_KM - since_km;
+    char buf[48];
+    format_km_status(buf, sizeof(buf), "ACEITE", m.oil_km_remaining, s_lbl_oil_status);
+    format_km_status(buf, sizeof(buf), "FILTRO", m.filter_km_remaining, s_lbl_filter_status);
 
-    char body[220];
-    int off = 0;
-    off += snprintf(body + off, sizeof(body) - off, "ODOMETRO TOTAL: %.0f km\n\n", m.odometer_km);
-
-    if (!ever_marked) {
-        off += snprintf(body + off, sizeof(body) - off, "ULTIMO CAMBIO: sin registrar\n");
-    } else {
-        off += snprintf(body + off, sizeof(body) - off, "ULTIMO CAMBIO: en %.0f km\n", m.odometer_at_last_oil_change_km);
-    }
-
-    lv_color_t col;
-    if (remaining_km <= 0) {
-        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: VENCIDO hace %.0f km", -remaining_km);
-        col = COL_DANGER;
-    } else if (remaining_km <= 1000) {
-        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: faltan %.0f km", remaining_km);
-        col = COL_WARN;
-    } else {
-        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: faltan %.0f km", remaining_km);
-        col = COL_OK;
-    }
-
-    lv_label_set_text(s_lbl_maint_body, body);
-    lv_obj_set_style_text_color(s_lbl_maint_body, col, 0);
+    char odo[32];
+    snprintf(odo, sizeof(odo), "Odometro propio: %.0f km", m.odometer_km);
+    lv_label_set_text(s_lbl_maint_odometer, odo);
 }
 
-static void marcar_cambio_event_cb(lv_event_t *e)
+static void maint_step_event_cb(lv_event_t *e)
+{
+    const maint_step_t *step = (const maint_step_t *)lv_event_get_user_data(e);
+    if (step->is_filter) {
+        storage_adjust_filter_km_remaining(step->delta_km);
+    } else {
+        storage_adjust_oil_km_remaining(step->delta_km);
+    }
+    render_maint_screen_content();
+}
+
+static void marcar_cambio_aceite_event_cb(lv_event_t *e)
 {
     (void)e;
     storage_mark_oil_change_done();
     render_maint_screen_content();
+}
+
+static void marcar_cambio_filtro_event_cb(lv_event_t *e)
+{
+    (void)e;
+    storage_mark_filter_change_done();
+    render_maint_screen_content();
+}
+
+/* Boton chico reutilizado para los pasos +/- y el "LISTO" de cada fila —
+ * mismo estilo visual que el resto de la app (COL_CARD + texto COL_ACCENT),
+ * evita repetir 6 lineas de setup de LVGL por boton. */
+static lv_obj_t *make_step_btn(lv_obj_t *parent, int x, int y, int w,
+                                const char *text, lv_event_cb_t cb, const void *user_data)
+{
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, w, 24);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, COL_CARD, 0);
+    lv_obj_set_style_radius(btn, 5, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)user_data);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, COL_ACCENT, 0);
+    lv_label_set_text(lbl, text);
+    lv_obj_center(lbl);
+    return btn;
 }
 
 static void build_maint_screen(void)
@@ -789,23 +841,32 @@ static void build_maint_screen(void)
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
     lv_obj_center(back_lbl);
 
-    lv_obj_t *mark_btn = lv_btn_create(scr);
-    lv_obj_set_size(mark_btn, 160, 24);
-    lv_obj_set_pos(mark_btn, 154, 4);
-    lv_obj_set_style_bg_color(mark_btn, COL_CARD, 0);
-    lv_obj_set_style_radius(mark_btn, 5, 0);
-    lv_obj_set_style_shadow_width(mark_btn, 0, 0);
-    lv_obj_add_event_cb(mark_btn, marcar_cambio_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *mark_lbl = lv_label_create(mark_btn);
-    lv_obj_set_style_text_font(mark_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(mark_lbl, COL_ACCENT, 0);
-    lv_label_set_text(mark_lbl, LV_SYMBOL_OK " CAMBIO REALIZADO");
-    lv_obj_center(mark_lbl);
+    /* Fila ACEITE: estado (y=34) + botones de ajuste (y=58). */
+    s_lbl_oil_status = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_oil_status, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_lbl_oil_status, LV_ALIGN_TOP_LEFT, 6, 34);
 
-    s_lbl_maint_body = lv_label_create(scr);
-    lv_obj_set_style_text_font(s_lbl_maint_body, &lv_font_montserrat_14, 0);
-    lv_obj_set_width(s_lbl_maint_body, 300);
-    lv_obj_align(s_lbl_maint_body, LV_ALIGN_TOP_LEFT, 10, 42);
+    make_step_btn(scr, 6,   58, 48, "-1K",  maint_step_event_cb, &s_oil_step_m1000);
+    make_step_btn(scr, 58,  58, 52, "-100", maint_step_event_cb, &s_oil_step_m100);
+    make_step_btn(scr, 114, 58, 52, "+100", maint_step_event_cb, &s_oil_step_p100);
+    make_step_btn(scr, 170, 58, 48, "+1K",  maint_step_event_cb, &s_oil_step_p1000);
+    make_step_btn(scr, 222, 58, 92, LV_SYMBOL_OK " LISTO", marcar_cambio_aceite_event_cb, NULL);
+
+    /* Fila FILTRO: mismo layout, corrido hacia abajo. */
+    s_lbl_filter_status = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_filter_status, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_lbl_filter_status, LV_ALIGN_TOP_LEFT, 6, 96);
+
+    make_step_btn(scr, 6,   120, 48, "-1K",  maint_step_event_cb, &s_filter_step_m1000);
+    make_step_btn(scr, 58,  120, 52, "-100", maint_step_event_cb, &s_filter_step_m100);
+    make_step_btn(scr, 114, 120, 52, "+100", maint_step_event_cb, &s_filter_step_p100);
+    make_step_btn(scr, 170, 120, 48, "+1K",  maint_step_event_cb, &s_filter_step_p1000);
+    make_step_btn(scr, 222, 120, 92, LV_SYMBOL_OK " LISTO", marcar_cambio_filtro_event_cb, NULL);
+
+    s_lbl_maint_odometer = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_maint_odometer, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_maint_odometer, COL_CAPTION, 0);
+    lv_obj_align(s_lbl_maint_odometer, LV_ALIGN_TOP_LEFT, 6, 158);
 
     render_maint_screen_content();
 }

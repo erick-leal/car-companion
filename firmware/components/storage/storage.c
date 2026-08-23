@@ -25,20 +25,32 @@ static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
  * cambio de aceite, no en cada muestra del OBD como los demas datos). */
 static maintenance_state_t s_maint;
 
+/* Valores de arranque cuando no hay (o no se puede leer) un mantenimiento
+ * guardado: odometro en 0, pero los contadores de aceite/filtro arrancan en
+ * el intervalo completo (no en 0 — 0 se veria como "VENCIDO", que no es
+ * cierto en un dispositivo recien instalado). */
+static void reset_maintenance_to_defaults(void)
+{
+    memset(&s_maint, 0, sizeof(s_maint));
+    s_maint.oil_km_remaining = STORAGE_OIL_CHANGE_INTERVAL_KM;
+    s_maint.filter_km_remaining = STORAGE_FILTER_CHANGE_INTERVAL_KM;
+}
+
 static void load_maintenance(void)
 {
     FILE *f = fopen(MAINT_FILE, "rb");
     if (f == NULL) {
-        memset(&s_maint, 0, sizeof(s_maint)); // primer boot: sin historial, todo en 0
+        reset_maintenance_to_defaults(); // primer boot: sin historial
         return;
     }
     if (fread(&s_maint, sizeof(s_maint), 1, f) != 1) {
-        /* Archivo existe pero no se pudo leer completo (corrupcion real, no
-         * "primer boot" — eso ya se manejo arriba con fopen==NULL). Se
-         * pierde el odometro acumulado, pero mejor arrancar en 0 que con
-         * datos a medio leer (podria dar un "faltan X km" sin sentido). */
-        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo, reiniciando mantenimiento en 0", MAINT_FILE);
-        memset(&s_maint, 0, sizeof(s_maint));
+        /* Archivo existe pero no se pudo leer completo — corrupcion real, o
+         * (mas probable la primera vez que se ve este log) el formato viejo
+         * de este archivo tenia menos campos que el actual y ya no calza en
+         * tamaño. En ambos casos se pierde el mantenimiento guardado, pero
+         * mejor eso que arrancar con datos a medio leer. */
+        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo (formato viejo o corrupcion), reiniciando mantenimiento", MAINT_FILE);
+        reset_maintenance_to_defaults();
     }
     fclose(f);
 }
@@ -147,6 +159,8 @@ static void end_trip(int64_t now_us)
              (unsigned long)rec.duration_s, rec.distance_km, rec.fuel_used_l, rec.max_rpm);
 
     s_maint.odometer_km += rec.distance_km;
+    s_maint.oil_km_remaining -= rec.distance_km;
+    s_maint.filter_km_remaining -= rec.distance_km;
     save_maintenance();
 }
 
@@ -262,8 +276,30 @@ esp_err_t storage_get_maintenance(maintenance_state_t *out)
 
 esp_err_t storage_mark_oil_change_done(void)
 {
-    s_maint.odometer_at_last_oil_change_km = s_maint.odometer_km;
+    s_maint.oil_km_remaining = STORAGE_OIL_CHANGE_INTERVAL_KM;
     save_maintenance();
-    ESP_LOGI(TAG, "cambio de aceite marcado en %.1fkm", s_maint.odometer_km);
+    ESP_LOGI(TAG, "cambio de aceite marcado (odometro propio: %.1fkm)", s_maint.odometer_km);
+    return ESP_OK;
+}
+
+esp_err_t storage_mark_filter_change_done(void)
+{
+    s_maint.filter_km_remaining = STORAGE_FILTER_CHANGE_INTERVAL_KM;
+    save_maintenance();
+    ESP_LOGI(TAG, "cambio de filtro marcado (odometro propio: %.1fkm)", s_maint.odometer_km);
+    return ESP_OK;
+}
+
+esp_err_t storage_adjust_oil_km_remaining(float delta_km)
+{
+    s_maint.oil_km_remaining += delta_km;
+    save_maintenance();
+    return ESP_OK;
+}
+
+esp_err_t storage_adjust_filter_km_remaining(float delta_km)
+{
+    s_maint.filter_km_remaining += delta_km;
+    save_maintenance();
     return ESP_OK;
 }

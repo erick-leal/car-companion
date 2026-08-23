@@ -34,16 +34,24 @@ typedef struct {
 } trip_record_t;
 
 /**
- * Cada cuantos km toca cambiar el aceite. Estimacion para diesel common-rail
- * con aceite semisintetico (uso mixto ciudad/carretera) — no es un dato del
- * fabricante del Maxus T60, es un numero razonable de partida. Si el manual
- * del auto da un intervalo distinto, cambiar esto por ese valor.
+ * Cada cuantos km toca cambiar el aceite / el filtro. Estimacion de partida
+ * para diesel common-rail con aceite semisintetico (uso mixto ciudad/
+ * carretera) — NO es un dato del fabricante del Maxus T60. Solo se usan
+ * como valor de reset al marcar un cambio hecho (ver storage_mark_*); el
+ * contador real (`oil_km_remaining`/`filter_km_remaining`) se puede ajustar
+ * a mano en cualquier momento desde la pantalla de Mantenimiento — el
+ * odometro propio de este dispositivo arranca en 0 y no tiene forma de
+ * saber cuanto le queda realmente a un auto que ya tenia uso antes de
+ * instalar esto, asi que el ajuste manual es la unica forma de calibrarlo
+ * contra la realidad (pedido real del 22 ago, primera manejada de prueba).
  */
 #define STORAGE_OIL_CHANGE_INTERVAL_KM 10000.0f
+#define STORAGE_FILTER_CHANGE_INTERVAL_KM 10000.0f
 
 typedef struct {
-    float odometer_km;                    // suma de distance_km de todos los viajes reales guardados
-    float odometer_at_last_oil_change_km; // odometro al momento del ultimo cambio marcado; 0 = nunca se marco uno
+    float odometer_km;         // suma de distance_km de todos los viajes reales guardados (informativo)
+    float oil_km_remaining;    // km que faltan para el proximo cambio de aceite; ajustable a mano
+    float filter_km_remaining; // idem para el filtro de aceite, independiente del aceite (no siempre se cambian juntos)
 } maintenance_state_t;
 
 esp_err_t storage_init(void);
@@ -61,8 +69,20 @@ esp_err_t storage_get_trip(uint32_t index, trip_record_t *out);
  */
 esp_err_t storage_get_pending_sync_count(uint32_t *out_count);
 
-/** Estado actual de mantenimiento (odometro total + odometro del ultimo cambio). */
+/** Estado actual de mantenimiento (odometro + km restantes de aceite y filtro). */
 esp_err_t storage_get_maintenance(maintenance_state_t *out);
 
-/** Marca "cambio de aceite hecho ahora": guarda el odometro actual como referencia. */
+/** Marca "cambio de aceite hecho ahora": resetea oil_km_remaining al intervalo completo. */
 esp_err_t storage_mark_oil_change_done(void);
+
+/** Idem para el filtro. */
+esp_err_t storage_mark_filter_change_done(void);
+
+/**
+ * Ajusta a mano los km restantes (positivo = suma, negativo = resta) —
+ * para calibrar contra el odometro real del auto, que este dispositivo no
+ * conoce. Sin limite: un valor negativo es valido y se muestra como
+ * "vencido" en la pantalla.
+ */
+esp_err_t storage_adjust_oil_km_remaining(float delta_km);
+esp_err_t storage_adjust_filter_km_remaining(float delta_km);

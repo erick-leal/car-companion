@@ -378,18 +378,27 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
      en el dashboard (carga motor, temp admisión/ambiente, presión
      barométrica, presión de riel) + estado de conexión y hace cuánto llegó
      el último dato. Solo lectura, se actualiza sola vía `state_store`.
-   - ~~**Mantenimiento**~~ — hecho el 22 ago: por ahora solo cambio de
-     aceite. `storage` acumula un odómetro (`odometer_km`, suma de
-     `distance_km` de cada viaje real guardado) y guarda el odómetro del
-     último cambio marcado (`odometer_at_last_oil_change_km`) en
-     `/storage/maint.bin`. La pantalla muestra el odómetro total, cuándo fue
-     el último cambio, y si falta o está vencido contra un intervalo fijo de
-     `STORAGE_OIL_CHANGE_INTERVAL_KM` = 10.000 km (estimación para diesel
-     semisintético uso mixto, **no** es el dato del manual del Maxus —
-     ajustar si se consigue el valor real). Botón "CAMBIO REALIZADO" marca
-     el cambio sin confirmación (acción de bajo riesgo, solo resetea un
-     contador). **Falta probar con un odómetro real** (hoy solo se vio en
-     0km, sin viajes guardados).
+   - ~~**Mantenimiento**~~ — hecho el 22 ago, **rediseñado el mismo día**
+     tras la primera manejada de prueba real. Versión 1 (odómetro propio +
+     intervalo fijo) resultó inútil en la práctica: el odómetro de este
+     dispositivo arranca en 0 y no tiene forma de saber cuánto le quedaba
+     realmente al auto (Erick ya había hecho el cambio de aceite antes de
+     instalar esto, con ~20.000km reales restantes — el sistema marcaba
+     "faltan 9981 km" sin sentido). Rediseño: `storage` ahora trackea
+     `oil_km_remaining` y `filter_km_remaining` como contadores
+     **independientes** (aceite y filtro no siempre se cambian juntos) que
+     se pueden **ajustar a mano** desde la pantalla con botones -1K/-100/
+     +100/+1K, para calibrar contra el odómetro real del auto. Cada viaje
+     real resta su distancia de ambos contadores; "LISTO" resetea uno al
+     intervalo completo (`STORAGE_OIL_CHANGE_INTERVAL_KM` /
+     `STORAGE_FILTER_CHANGE_INTERVAL_KM`, ambos 10.000 km de partida,
+     ajustables). El cambio de formato de `/storage/maint.bin` hace que el
+     archivo viejo no calce en tamaño — se detecta y se reinicia con un
+     `ESP_LOGW` explicando por qué (confirmado en hardware: perdió el
+     odómetro propio acumulado de 18.6km, pero **no** los viajes guardados,
+     que viven en un archivo aparte). **Falta probar los botones +/- en la
+     pantalla real** (compilado y flasheado, pero el layout de 5 botones por
+     fila en 320px de ancho no se verificó a ojo en el M5 todavía).
 8. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
    velocidad siempre 0 y boost sin carga de turbo real).
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el

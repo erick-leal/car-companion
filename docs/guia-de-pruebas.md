@@ -129,32 +129,41 @@ Menú → **Diagnóstico**.
     soporta ese PID en este auto — no es necesariamente un bug, puede ser
     una limitación real del adaptador/auto.
 
-## 5. Mantenimiento (pantalla nueva, 22 ago)
+## 5. Mantenimiento (pantalla nueva, rediseñada el 22 ago)
 
 Menú → **Mantenimiento**.
 
-- Solo cambio de aceite por ahora. El odómetro que muestra esta pantalla
-  **no** es el odómetro real del auto — es la suma de los km que
-  Car Companion registró en viajes reales (>5 min) desde que se instaló.
-  Va a partir de 0 y crecer solo con lo que se maneje de acá en adelante.
-- **Antes de marcar el primer cambio**: debería decir "ULTIMO CAMBIO: sin
-  registrar" y "PROX. CAMBIO: faltan 10000 km" (o el valor de
-  `STORAGE_OIL_CHANGE_INTERVAL_KM`), en verde.
-- **Después de generar algunos viajes reales**: el "ODOMETRO TOTAL" debería
-  subir acorde a lo manejado, y "faltan X km" debería bajar en la misma
-  proporción.
-- **Botón "CAMBIO REALIZADO"**: al tocarlo, debería resetear "faltan X km"
-  de vuelta al intervalo completo y actualizar "ULTIMO CAMBIO" al odómetro
-  actual. Ojo: no pide confirmación, así que si lo tocás por error no hay
-  forma de deshacerlo desde la pantalla — solo importa si estabas cerca del
-  cambio real.
-- **Cuando falten menos de 1000 km**: el texto debería pasar a **amarillo**.
-- **Si se pasa el intervalo sin marcar cambio**: debería decir "VENCIDO hace
-  X km" en **rojo**.
-- El intervalo de 10.000 km es una estimación de partida (diesel
-  semisintético, uso mixto) — si en algún momento conseguís el intervalo
-  real que recomienda el manual del Maxus T60, avisar para ajustar
-  `STORAGE_OIL_CHANGE_INTERVAL_KM` en `firmware/components/storage/include/storage.h`.
+- Dos filas independientes: **ACEITE** y **FILTRO**, cada una con su propio
+  contador de km restantes — no siempre se cambian juntos, así que cada uno
+  se ajusta y se marca por separado.
+- Cada fila tiene 5 botones: **-1K, -100, +100, +1K** (para ajustar los km
+  restantes a mano) y **LISTO** (para marcar el cambio hecho y resetear al
+  intervalo completo).
+- **Primera vez que se calibra un contador real**: como el sistema recién
+  empezó a trackear (arranca en 0km propios), usar los botones -1K/-100 para
+  bajar "faltan X km" hasta que se acerque a lo que realmente falta según tu
+  último cambio real (ej. si sabés que te faltan ~20.000km, tocar "+1K" un
+  par de veces, o "-1K" repetido si el valor de partida es mayor). Es un
+  ajuste aproximado a mano, no hace falta que quede exacto al km.
+- **Con cada viaje real** (>5 min), ambos contadores (aceite y filtro)
+  deberían bajar en la misma proporción que la distancia manejada — se
+  restan automáticamente, no hace falta tocar nada.
+- **Botón "LISTO"**: resetea esa fila (aceite o filtro, según cuál se
+  toque) al intervalo completo. No pide confirmación — si se toca por error
+  no hay forma de deshacerlo desde la pantalla, solo importa si estabas
+  cerca del cambio real.
+- **Colores**: verde con más de 1000km restantes, amarillo con 1000 o
+  menos, rojo con "VENCIDO hace X km" si ya se pasó.
+- Los intervalos de partida (10.000 km para ambos) son estimaciones — no
+  son el dato del manual del Maxus. Se pueden cambiar en
+  `firmware/components/storage/include/storage.h`
+  (`STORAGE_OIL_CHANGE_INTERVAL_KM` / `STORAGE_FILTER_CHANGE_INTERVAL_KM`),
+  eso solo afecta a qué valor vuelve el contador al tocar "LISTO" — no
+  afecta el ajuste manual con los botones +/-.
+- **Verificar visualmente que los 5 botones por fila entran bien en la
+  pantalla** (320px de ancho) — esto se compiló y flasheó pero no se
+  confirmó a ojo en el M5 real todavía, avisar si algún texto se ve cortado
+  o los botones se superponen.
 
 ## 6. Logs nuevos para revisar después de manejar (22 ago)
 
@@ -219,10 +228,10 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
 - [ ] Diagnóstico: confirmar que "ACTUALIZADO" se mantiene bajo con el auto
       conectado, y que los PIDs nuevos (carga motor, temps, presiones)
       tienen sentido.
-- [ ] Mantenimiento: confirmar que el odómetro sube con viajes reales, que
-      "CAMBIO REALIZADO" resetea bien la cuenta, y que el intervalo de
-      10.000 km hace sentido (o conseguir el valor real del manual del T60
-      para ajustarlo).
+- [ ] Mantenimiento: confirmar que los 5 botones por fila entran bien en
+      pantalla, que ajustar con -1K/-100/+100/+1K calibra bien el contador
+      de aceite y de filtro por separado, y que "LISTO" resetea cada uno
+      correctamente.
 - [ ] Reconexión real: confirmar que al arrancar el motor (donde el Vgate
       típicamente se resetea por la baja de tensión), el dashboard pasa por
       "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado
