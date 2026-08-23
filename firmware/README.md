@@ -328,14 +328,22 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
 6. ~~`storage`: historial de viajes en flash~~ — hecho el 22 ago, ver arriba.
    **Falta probar un viaje real completo** (queda pendiente para la próxima
    vez que se maneje el auto).
-7. **Lo que sigue:** llenar las pantallas secundarias, que hoy son
-   placeholders con botón de volver:
-   - **Viaje** — ya hay datos guardados por `storage` (`storage_get_trip*`);
-     falta que la pantalla los lea y los muestre.
-   - **Fallas (DTC)** — leer códigos con modo 03 y borrarlos con modo 04.
-     `obd_driver` ya puede mandar comandos arbitrarios, falta el parseo.
-   - **Diagnóstico** — PIDs crudos y estado del adaptador, para debug en el auto.
+7. **Pantallas secundarias:**
+   - ~~**Viaje**~~ — hecho el 22 ago: lee `storage_get_trip*` y navega entre
+     viajes guardados (prev/next). **Falta probar con un viaje real completo**
+     (hasta ahora solo se vio el estado "SIN VIAJES").
+   - ~~**Fallas (DTC)**~~ — hecho el 22 ago: lee códigos con modo 03 vía el
+     patrón "buzón" en `state_store` (ver arriba). Falta borrarlos (modo 04) —
+     no implementado todavía, no hay botón para eso. **Falta probar leyendo
+     un código real** (hasta ahora solo se vieron los estados "sin fallas" y
+     "sin conexión OBD").
+   - ~~**Diagnóstico**~~ — hecho el 22 ago: PIDs crudos que no tienen tarjeta
+     en el dashboard (carga motor, temp admisión/ambiente, presión
+     barométrica, presión de riel) + estado de conexión y hace cuánto llegó
+     el último dato. Solo lectura, se actualiza sola vía `state_store`.
    - **Mantenimiento** — service, filtros, aceite. Puede reusar `storage`.
+     Pendiente: necesita decisiones de producto primero (¿qué intervalos?
+     ¿cómo se resetea un contador de service?).
 8. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
    velocidad siempre 0 y boost sin carga de turbo real).
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el

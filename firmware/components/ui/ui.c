@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -85,6 +86,7 @@ static lv_obj_t *s_lbl_trip_header;
 static lv_obj_t *s_lbl_trip_body;
 static uint32_t  s_trip_total;
 static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
+static lv_obj_t *s_lbl_diag_body;
 
 /* true solo mientras esa pantalla esta activa. Al cambiar de pantalla
  * lv_obj_clean() destruye los labels de la anterior y los punteros quedan
@@ -93,6 +95,7 @@ static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver stora
  * sus widgets. Nunca las dos a la vez: son pantallas distintas. */
 static bool s_dashboard_active;
 static bool s_dtc_screen_active;
+static bool s_diag_screen_active;
 static bool s_subscribed;
 
 /* Las funciones build_* asumen que el lock de LVGL YA esta tomado: se llaman
@@ -104,6 +107,7 @@ static void build_main_screen(void);
 static void build_menu_screen(void);
 static void build_dtc_screen(void);
 static void build_trip_screen(void);
+static void build_diag_screen(void);
 
 /* Crea una tarjeta con titulo chico arriba y valor grande abajo. Devuelve el
  * label del valor, que es lo unico que se actualiza despues. */
@@ -240,6 +244,37 @@ static void update_dtc_widgets(const vehicle_state_t *state)
     lv_obj_set_style_text_color(s_lbl_dtc_body, COL_DANGER, 0);
 }
 
+/* Pantalla de Diagnostico: PIDs "crudos" que no tienen tarjeta en el
+ * dashboard (carga motor, temps de admision/ambiente, presiones) mas el
+ * estado de conexion y que tan viejo es el ultimo dato — util para saber si
+ * el adaptador sigue mandando datos o se quedo pegado. Todo sale de
+ * state_store, nada de esto consulta a pid_engine u obd_driver directo. */
+static void update_diag_widgets(const vehicle_state_t *state)
+{
+    if (s_lbl_diag_body == NULL) return;
+
+    char body[320];
+    int off = 0;
+    off += snprintf(body + off, sizeof(body) - off,
+                     "CONEXION: %s\n", state->data_valid ? "OBD OK" : "SIN OBD");
+    if (state->data_valid) {
+        int64_t age_s = (esp_timer_get_time() - state->last_update_us) / 1000000;
+        off += snprintf(body + off, sizeof(body) - off,
+                         "ACTUALIZADO: hace %llds\n", (long long)age_s);
+    } else {
+        off += snprintf(body + off, sizeof(body) - off, "ACTUALIZADO: nunca\n");
+    }
+    off += snprintf(body + off, sizeof(body) - off, "\n");
+    off += snprintf(body + off, sizeof(body) - off, "CARGA MOTOR: %u%%\n", state->engine_load_pct);
+    off += snprintf(body + off, sizeof(body) - off, "TEMP ADMISION: %d C\n", state->intake_air_temp_c);
+    off += snprintf(body + off, sizeof(body) - off, "TEMP AMBIENTE: %d C\n", state->ambient_air_temp_c);
+    off += snprintf(body + off, sizeof(body) - off, "PRESION BAROM: %u kPa\n", state->barometric_pressure_kpa);
+    snprintf(body + off, sizeof(body) - off, "PRESION RIEL: %lu kPa", (unsigned long)state->fuel_rail_pressure_kpa);
+
+    lv_label_set_text(s_lbl_diag_body, body);
+    lv_obj_set_style_text_color(s_lbl_diag_body, state->data_valid ? COL_VALUE : COL_CAPTION, 0);
+}
+
 static void on_state_change(const vehicle_state_t *state, void *ctx)
 {
     (void)ctx;
@@ -250,6 +285,8 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
         update_dashboard_widgets(state);
     } else if (s_dtc_screen_active) {
         update_dtc_widgets(state);
+    } else if (s_diag_screen_active) {
+        update_diag_widgets(state);
     }
     lvgl_unlock();
 }
@@ -266,6 +303,7 @@ static void build_main_screen(void)
     lv_obj_clean(scr);
     s_dashboard_active = true;
     s_dtc_screen_active = false;
+    s_diag_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -372,6 +410,7 @@ static void build_placeholder_screen(const char *titulo, const char *detalle)
     lv_obj_clean(scr);
     s_dashboard_active = false;
     s_dtc_screen_active = false;
+    s_diag_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -431,6 +470,7 @@ static void build_dtc_screen(void)
     lv_obj_clean(scr);
     s_dashboard_active = false;
     s_dtc_screen_active = true;
+    s_diag_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -473,6 +513,44 @@ static void build_dtc_screen(void)
     vehicle_state_t snapshot;
     if (state_store_get(&snapshot) == ESP_OK) {
         update_dtc_widgets(&snapshot);
+    }
+}
+
+/* --- Pantalla de Diagnostico: PIDs crudos + estado del adaptador, para
+ * debug en el auto (ver update_diag_widgets arriba). Solo lectura, no hay
+ * botones de accion como en Fallas. */
+static void build_diag_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    s_dashboard_active = false;
+    s_dtc_screen_active = false;
+    s_diag_screen_active = true;
+    lv_obj_set_style_bg_color(scr, COL_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_btn_create(scr);
+    lv_obj_set_size(back, 88, 24);
+    lv_obj_set_pos(back, 6, 4);
+    lv_obj_set_style_bg_color(back, COL_CARD, 0);
+    lv_obj_set_style_radius(back, 5, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, back_to_menu_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(back_lbl, COL_ACCENT, 0);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
+    lv_obj_center(back_lbl);
+
+    s_lbl_diag_body = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_diag_body, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(s_lbl_diag_body, 300);
+    lv_obj_align(s_lbl_diag_body, LV_ALIGN_TOP_LEFT, 10, 40);
+
+    vehicle_state_t snapshot;
+    if (state_store_get(&snapshot) == ESP_OK) {
+        update_diag_widgets(&snapshot);
     }
 }
 
@@ -564,6 +642,7 @@ static void build_trip_screen(void)
     lv_obj_clean(scr);
     s_dashboard_active = false;
     s_dtc_screen_active = false;
+    s_diag_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -648,7 +727,7 @@ static void menu_item_event_cb(lv_event_t *e)
             build_dtc_screen();
             break;
         case MENU_DIAGNOSTICO:
-            build_placeholder_screen("DIAGNOSTICO", "PIDs crudos y estado del adaptador");
+            build_diag_screen();
             break;
         case MENU_MANTENIMIENTO:
             build_placeholder_screen("MANTENIMIENTO", "Service, filtros, aceite");
@@ -671,6 +750,7 @@ static void build_menu_screen(void)
     lv_obj_clean(scr);
     s_dashboard_active = false;
     s_dtc_screen_active = false;
+    s_diag_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -738,7 +818,9 @@ void ui_show_dtc_screen(void)
 }
 void ui_show_diagnostics_screen(void)
 {
-    show_placeholder_locked("DIAGNOSTICO", "PIDs crudos y estado del adaptador");
+    if (!lvgl_lock(1000)) return;
+    build_diag_screen();
+    lvgl_unlock();
 }
 void ui_show_maintenance_screen(void)
 {
