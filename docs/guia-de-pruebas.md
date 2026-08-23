@@ -121,7 +121,34 @@ Menú → **Diagnóstico**.
     soporta ese PID en este auto — no es necesariamente un bug, puede ser
     una limitación real del adaptador/auto.
 
-## 5. Si algo no se ve bien
+## 5. Mantenimiento (pantalla nueva, 22 ago)
+
+Menú → **Mantenimiento**.
+
+- Solo cambio de aceite por ahora. El odómetro que muestra esta pantalla
+  **no** es el odómetro real del auto — es la suma de los km que
+  Car Companion registró en viajes reales (>5 min) desde que se instaló.
+  Va a partir de 0 y crecer solo con lo que se maneje de acá en adelante.
+- **Antes de marcar el primer cambio**: debería decir "ULTIMO CAMBIO: sin
+  registrar" y "PROX. CAMBIO: faltan 10000 km" (o el valor de
+  `STORAGE_OIL_CHANGE_INTERVAL_KM`), en verde.
+- **Después de generar algunos viajes reales**: el "ODOMETRO TOTAL" debería
+  subir acorde a lo manejado, y "faltan X km" debería bajar en la misma
+  proporción.
+- **Botón "CAMBIO REALIZADO"**: al tocarlo, debería resetear "faltan X km"
+  de vuelta al intervalo completo y actualizar "ULTIMO CAMBIO" al odómetro
+  actual. Ojo: no pide confirmación, así que si lo tocás por error no hay
+  forma de deshacerlo desde la pantalla — solo importa si estabas cerca del
+  cambio real.
+- **Cuando falten menos de 1000 km**: el texto debería pasar a **amarillo**.
+- **Si se pasa el intervalo sin marcar cambio**: debería decir "VENCIDO hace
+  X km" en **rojo**.
+- El intervalo de 10.000 km es una estimación de partida (diesel
+  semisintético, uso mixto) — si en algún momento conseguís el intervalo
+  real que recomienda el manual del Maxus T60, avisar para ajustar
+  `STORAGE_OIL_CHANGE_INTERVAL_KM` en `firmware/components/storage/include/storage.h`.
+
+## 6. Si algo no se ve bien
 
 - **Texto raro / caracteres vacíos**: los acentos (á, é, í, ó, ú, ñ) no se
   ven bien con la fuente actual — si aparece un cuadrado vacío en vez de una
@@ -160,3 +187,7 @@ Menú → **Diagnóstico**.
 - [ ] Diagnóstico: confirmar que "ACTUALIZADO" se mantiene bajo con el auto
       conectado, y que los PIDs nuevos (carga motor, temps, presiones)
       tienen sentido.
+- [ ] Mantenimiento: confirmar que el odómetro sube con viajes reales, que
+      "CAMBIO REALIZADO" resetea bien la cuenta, y que el intervalo de
+      10.000 km hace sentido (o conseguir el valor real del manual del T60
+      para ajustarlo).
