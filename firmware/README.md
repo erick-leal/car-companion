@@ -342,9 +342,8 @@ open -e firmware/components/connectivity/include/connectivity_secrets.h
   pendiente, ver `docs/api-contract.md`).
 - Disparo: automático en segundo plano, no un botón manual.
 
-**Bugs reales encontrados armando esto (los dos antes de llegar a probar
-login/sync real, que todavía no se probó — falta que Erick complete
-`connectivity_secrets.h` con sus datos reales):**
+**Bugs reales encontrados armando esto (primera tanda, con credenciales de
+ejemplo — WiFi nunca llegaba a conectar de verdad):**
 - **IRAM overflow al linkear** (`iram0_0_seg overflowed by 6920 bytes`):
   BLE + WiFi + mbedTLS ya están justos de IRAM en el ESP32 clásico.
   Arreglado bajando `CONFIG_ESP32_REV_MIN` de "v0.0" (default) a "v3.0" —
@@ -367,9 +366,18 @@ login/sync real, que todavía no se probó — falta que Erick complete
 - El backend en Railway (`/health`, `/auth/login` con credenciales
   incorrectas) responde exactamente como documenta `docs/api-contract.md` —
   confirmado con `curl` desde afuera del firmware, así que el contrato que
-  asume `connectivity.c` es correcto. **Lo que falta probar de punta a
-  punta es el login/registro/sync real**, una vez que
-  `connectivity_secrets.h` tenga credenciales reales.
+  asume `connectivity.c` es correcto.
+
+**Segunda tanda de bugs reales (23 ago, mismo día): con WiFi de casa real
+conectando de verdad, aparecieron tres problemas nuevos en el handshake TLS
+mismo** — ver el punto 10 de "Próximo paso concreto" más abajo para el
+detalle completo (RAM insuficiente en el handshake, stack corto en la tarea,
+y la causa de fondo real: fragmentación de RAM interna, resuelta moviendo
+mbedTLS a PSRAM). **Confirmado en hardware real: WiFi conecta, SNTP
+sincroniza, y el login HTTPS contra el backend llega hasta la respuesta de
+la aplicación** (400 por una contraseña de menos de 8 caracteres en
+`connectivity_secrets.h` — dato de Erick, no un bug). Login/registro/sync
+exitoso de punta a punta queda para cuando corrija esa contraseña.
 
 **Botón manual de sync (23 ago)**: la pantalla de Viaje suma un botón solo
 con el ícono de sincronizar (arriba a la derecha, `LV_SYMBOL_REFRESH`, sin
@@ -484,14 +492,37 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
    bitmask estándar, requieren ingeniería inversa. Ver `docs/pid-mapping.md`.
 10. ~~`connectivity`: WiFi + sync de viajes al backend~~ — hecho el 23 ago,
-   ver sección dedicada más arriba. **Falta el setup manual** (completar
-   `connectivity_secrets.h` con WiFi/credenciales reales, no lo puede hacer
-   el asistente) y **probar el login/registro/sync real** una vez hecho eso
-   — hasta ahora solo se confirmó que arranca sin crashear con credenciales
-   de ejemplo (WiFi nunca conecta, que es el comportamiento esperado) y que
-   el backend responde como se espera (probado con `curl` desde afuera del
-   firmware). Falta también decidir el token de dispositivo separado (ver
+   **probado end-to-end en hardware real el mismo día** con WiFi de casa
+   real: conecta, sincroniza hora por SNTP, hace login HTTPS contra el
+   backend. El único paso que falta es que Erick complete
+   `connectivity_secrets.h` con una contraseña de al menos 8 caracteres (el
+   backend la rechaza con 400, error esperado — no es un bug). Falta
+   también decidir el token de dispositivo separado (ver
    `docs/api-contract.md`) y definir la unidad de `avg_consumption`.
+
+   **Tres bugs reales más, encontrados recién con WiFi de verdad** (los del
+   22-23 ago con credenciales de ejemplo solo cubrían "WiFi nunca conecta"
+   — con una red real detrás, aparecieron problemas nuevos en el handshake
+   TLS mismo):
+   - **RAM interna insuficiente en el handshake TLS**: `mbedtls_ssl_setup
+     returned -0x7F00` (`MBEDTLS_ERR_SSL_ALLOC_FAILED`) — los buffers TLS
+     por default (16KB in + 4KB out) no entraban con BLE+WiFi+LVGL ya
+     instalados. Bajado el buffer de entrada a 8KB y habilitado
+     `MBEDTLS_DYNAMIC_BUFFER` (aloca solo cuando hace falta, libera después).
+   - **Stack insuficiente en la tarea de connectivity**: con el problema de
+     RAM anterior resuelto, el handshake avanzaba pero fallaba con "PK
+     verify failed" (síntoma clásico de stack corto en mbedTLS: la
+     verificación de firma RSA/ECDSA corrompe la pila en silencio en vez de
+     crashear limpio). Subido el stack de la tarea de 6KB a 12KB.
+   - **La causa de fondo real, encontrada con logging temporal en DEBUG +
+     `heap_caps_get_largest_free_block`**: no era falta de RAM interna total
+     (quedaban ~27KB libres) sino **fragmentación** — el bloque contiguo más
+     grande disponible era de solo 12KB, y el handshake real necesita ir
+     pidiendo varios bloques que se fragmentan entre sí compitiendo con
+     NimBLE+LVGL+WiFi en la misma RAM interna. Arreglado de raíz moviendo
+     las allocaciones de mbedTLS a PSRAM (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`,
+     4MB libres sin competencia) en vez de seguir ajustando tamaños de
+     buffer a ciegas.
 10. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
    ago)**. El Core2 trae un MPU6886 (acelerómetro+giroscopio, confirmado en
    la fuente de M5Stack) en el mismo bus I2C que el AXP192/táctil, y se

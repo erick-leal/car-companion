@@ -12,6 +12,7 @@
 #include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -58,6 +59,13 @@ static void format_iso8601(time_t epoch_s, char *out, size_t out_size)
     struct tm tm_utc;
     gmtime_r(&epoch_s, &tm_utc);
     strftime(out, out_size, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+}
+
+static void on_sntp_time_synced(struct timeval *tv)
+{
+    char buf[32];
+    format_iso8601(tv->tv_sec, buf, sizeof(buf));
+    ESP_LOGI(TAG, "hora sincronizada por SNTP: %s", buf);
 }
 
 /* --- WiFi + SNTP --- */
@@ -150,9 +158,12 @@ static esp_err_t wifi_and_sntp_start(void)
     }
 
     /* wait_for_sync=false: no bloquear el arranque esperando la hora. La
-     * tarea de fondo de sync ya chequea time_is_valid() antes de usarla. */
+     * tarea de fondo de sync ya chequea time_is_valid() antes de usarla.
+     * sync_cb solo loguea confirmacion — sin esto no habia forma de saber
+     * desde el log si SNTP realmente habia sincronizado o no. */
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     sntp_cfg.wait_for_sync = false;
+    sntp_cfg.sync_cb = &on_sntp_time_synced;
     err = esp_netif_sntp_init(&sntp_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_netif_sntp_init fallo: %s (WiFi sigue andando, pero sin hora real no se puede armar started_at/ended_at para sync)", esp_err_to_name(err));
@@ -338,6 +349,13 @@ esp_err_t connectivity_sync_trip_history(void)
         batch_end = synced_count + SYNC_BATCH_MAX;
     }
 
+    char now_str[32];
+    format_iso8601(time(NULL), now_str, sizeof(now_str));
+    ESP_LOGI(TAG, "sync: intentando login (hora local del dispositivo: %s, RAM interna libre=%u, bloque contiguo mas grande=%u)",
+             now_str,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
     char token[512];
     err = http_login(token, sizeof(token));
     if (err != ESP_OK) {
@@ -400,8 +418,16 @@ static void connectivity_task(void *arg)
         bool periodic_due = (now - last_periodic_check_us) >= (int64_t)SYNC_CHECK_INTERVAL_MS * 1000;
 
         if (manual_requested || periodic_due) {
-            connectivity_sync_trip_history(); // no-op instantaneo y gratis si no hay WiFi o no hay nada pendiente
-            last_periodic_check_us = now;
+            esp_err_t sync_err = connectivity_sync_trip_history(); // no-op instantaneo y gratis si no hay WiFi o no hay nada pendiente
+            /* Si devolvio ESP_ERR_INVALID_STATE (sin WiFi o sin hora SNTP
+             * todavia — visto en hardware real el 23 ago: SNTP tardo ~33s,
+             * mas que el intervalo de 30s), NO actualizamos el timer: el
+             * proximo tick de 1s vuelve a intentar en vez de esperar otros
+             * 30s completos de mas por "gastar" el turno en algo que ni
+             * siquiera llego a intentar la red. */
+            if (sync_err != ESP_ERR_INVALID_STATE) {
+                last_periodic_check_us = now;
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -417,7 +443,13 @@ esp_err_t connectivity_init(void)
         return err;
     }
 
-    BaseType_t ok = xTaskCreate(connectivity_task, "connectivity", 6144, NULL, 3, NULL);
+    /* 12KB, no 6KB: un handshake TLS real (verificacion de firma RSA/ECDSA
+     * contra el cert bundle) necesita bastante stack — con 6KB fallaba en
+     * hardware real con "PK verify failed" durante el handshake (23 ago),
+     * sintoma clasico de stack corto en mbedTLS (la corrupcion silenciosa
+     * de la pila arruina el resultado de la operacion criptografica en vez
+     * de crashear limpio). */
+    BaseType_t ok = xTaskCreate(connectivity_task, "connectivity", 12288, NULL, 3, NULL);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "no se pudo crear la tarea de connectivity");
         return ESP_ERR_NO_MEM;

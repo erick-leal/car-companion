@@ -75,3 +75,26 @@ CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16
+
+# Mismo problema de RAM interna justa, ahora del lado de mbedTLS: el primer
+# intento real de sync fallaba en el handshake TLS con
+# "mbedtls_ssl_setup returned -0x7F00" (MBEDTLS_ERR_SSL_ALLOC_FAILED) -- los
+# buffers TLS por default (16KB in + 4KB out = 20KB) no entraban. Bajado el
+# buffer de entrada a 8KB (de sobra para las respuestas JSON chicas del
+# backend) y habilitado DYNAMIC_BUFFER (los buffers se allocan solo cuando
+# hace falta enviar/recibir y se liberan despues, en vez de quedar
+# reservados todo el rato que dura la conexion).
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# La causa de fondo real (encontrada con CONFIG_LOG_DEFAULT_LEVEL_DEBUG
+# temporal + heap_caps_get_largest_free_block, 23 ago): no era falta de RAM
+# interna total (quedaban ~27KB libres) sino FRAGMENTACION -- el bloque
+# contiguo mas grande disponible era de solo 12KB, y el handshake TLS real
+# necesita ir pidiendo varios bloques de a poco (sesion, contexto X.509,
+# buffers de trabajo) que se van fragmentando entre si compitiendo con
+# NimBLE+LVGL+WiFi ya instalados en la misma RAM interna. Mover las
+# allocaciones de mbedTLS a PSRAM (4MB libres, sin competencia con nadie
+# mas) evita el problema de raiz en vez de seguir ajustando tamaños de
+# buffer a ciegas.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
