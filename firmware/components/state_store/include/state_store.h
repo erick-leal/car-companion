@@ -84,5 +84,23 @@ bool state_store_consume_dtc_read_request(void);
 esp_err_t state_store_request_dtc_clear(void);
 bool state_store_consume_dtc_clear_request(void);
 
+/**
+ * Marca data_valid=false (el adaptador OBD se desconecto — reason real de
+ * manejo: el Vgate se resetea con la caida de tension al arrancar el motor,
+ * o queda fuera de rango momentaneamente). Deja el resto de los campos
+ * (ultima lectura conocida) intactos, para que si `ui` quiere mostrarlos
+ * como "ultimo dato visto" en vez de borrarlos de golpe, pueda — hoy no lo
+ * hace, pero no hay razon para destruir el dato.
+ *
+ * IMPORTANTE: antes de esto no existia forma de volver data_valid a false
+ * una vez que se ponia true la primera vez — el dashboard se quedaba
+ * mostrando "OBD OK" con datos viejos para siempre despues de una
+ * desconexion real. Encontrado revisando errores tipicos de manejo (22 ago).
+ * `storage` tambien depende de este flag para cerrar un viaje cuando el OBD
+ * se desconecta (ver storage.c) — sin este setter esa rama nunca se
+ * ejecutaba, y todos los viajes terminaban solo por el timeout de 15min.
+ */
+esp_err_t state_store_set_disconnected(void);
+
 /** Usado por ui para redibujar cuando cambian los datos. Maximo STATE_STORE_MAX_SUBSCRIBERS. */
 esp_err_t state_store_subscribe(state_change_cb_t cb, void *ctx);

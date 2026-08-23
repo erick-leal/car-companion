@@ -3,6 +3,8 @@
 #include "state_store.h"
 #include "obd_driver.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -261,14 +263,68 @@ static void discover_supported_pids(void)
     vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
 }
 
+/* Log periodico de "salud" del sistema (heap libre + minimo historico +
+ * conectado o no), independiente de si hay OBD conectado — sirve para
+ * revisar despues de una manejada larga si algo se fue degradando de a poco
+ * (memory leak, etc.) sin tener que estar mirando la pantalla en el momento.
+ * Cada 5min: suficientemente seguido para tener datos de una manejada de
+ * media hora, sin llenar el log de ruido. */
+#define HEALTH_LOG_INTERVAL_US (5LL * 60 * 1000000)
+static int64_t s_last_health_log_us = 0;
+
+static void log_health_if_due(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_last_health_log_us != 0 && (now - s_last_health_log_us) < HEALTH_LOG_INTERVAL_US) {
+        return;
+    }
+    s_last_health_log_us = now;
+    ESP_LOGI(TAG, "salud: heap_libre=%u min_heap_visto=%u obd_conectado=%d uptime=%llds",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)esp_get_minimum_free_heap_size(),
+             (int)obd_driver_is_connected(),
+             (long long)(now / 1000000));
+}
+
 static void poll_task(void *arg)
 {
     bool discovered = false;
+    bool was_connected = false;
+    /* Arranca en "ahora" (no 0) para que el recordatorio de abajo tambien
+     * funcione si el OBD nunca llego a conectarse ni una vez desde el
+     * arranque (ej. Vgate no enchufado) — no solo despues de una
+     * desconexion real. */
+    int64_t disconnected_since_us = esp_timer_get_time();
+
     while (1) {
+        log_health_if_due();
+
         if (!obd_driver_is_connected()) {
+            if (was_connected) {
+                /* Transicion real de conectado a desconectado: caida de BLE,
+                 * reset del Vgate por baja de tension al arrancar el motor,
+                 * etc. — esto es normal en manejo real, no un bug en si, pero
+                 * antes de esto el dashboard se quedaba pegado en "OBD OK"
+                 * con datos viejos porque nada volvia a poner data_valid en
+                 * false (encontrado revisando errores tipicos de manejo,
+                 * 22 ago — ver nota en state_store.h). */
+                ESP_LOGW(TAG, "OBD desconectado, reintentando...");
+                state_store_set_disconnected();
+                discovered = false; // al reconectar, re-descubrir PIDs por si cambio de adaptador/auto
+                disconnected_since_us = esp_timer_get_time();
+            } else if ((esp_timer_get_time() - disconnected_since_us) >= 60LL * 1000000) {
+                /* Recordatorio cada ~60s mientras sigue sin conectar, para
+                 * distinguir en el log "sigue buscando el adaptador" de "se
+                 * colgo en silencio" al revisar despues de una manejada. */
+                ESP_LOGW(TAG, "todavia sin conexion OBD (%llds)",
+                         (long long)((esp_timer_get_time() - disconnected_since_us) / 1000000));
+                disconnected_since_us = esp_timer_get_time();
+            }
+            was_connected = false;
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        was_connected = true;
 
         if (!discovered) {
             discover_supported_pids();

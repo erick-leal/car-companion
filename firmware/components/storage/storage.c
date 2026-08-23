@@ -33,6 +33,11 @@ static void load_maintenance(void)
         return;
     }
     if (fread(&s_maint, sizeof(s_maint), 1, f) != 1) {
+        /* Archivo existe pero no se pudo leer completo (corrupcion real, no
+         * "primer boot" — eso ya se manejo arriba con fopen==NULL). Se
+         * pierde el odometro acumulado, pero mejor arrancar en 0 que con
+         * datos a medio leer (podria dar un "faltan X km" sin sentido). */
+        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo, reiniciando mantenimiento en 0", MAINT_FILE);
         memset(&s_maint, 0, sizeof(s_maint));
     }
     fclose(f);
@@ -45,8 +50,11 @@ static void save_maintenance(void)
         ESP_LOGE(TAG, "no se pudo abrir %s para guardar mantenimiento", MAINT_FILE);
         return;
     }
-    fwrite(&s_maint, sizeof(s_maint), 1, f);
+    size_t written = fwrite(&s_maint, sizeof(s_maint), 1, f);
     fclose(f);
+    if (written != 1) {
+        ESP_LOGE(TAG, "escritura incompleta de %s (el odometro/ultimo cambio puede haber quedado desactualizado)", MAINT_FILE);
+    }
 }
 
 /* --- Estado del viaje en curso (RAM, se persiste recien al terminar) --- */
@@ -103,11 +111,21 @@ static void end_trip(int64_t now_us)
 
     FILE *f = fopen(TRIPS_FILE, "ab");
     if (f == NULL) {
-        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el viaje", TRIPS_FILE);
+        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el viaje (se pierde este viaje)", TRIPS_FILE);
         return;
     }
-    fwrite(&rec, sizeof(rec), 1, f);
+    size_t written = fwrite(&rec, sizeof(rec), 1, f);
     fclose(f);
+    if (written != 1) {
+        /* Visto en la practica cuando la particion se queda sin espacio o hay
+         * un error de flash real — mejor loguearlo fuerte que dejar un
+         * registro a medio escribir en silencio (trips.bin se lee despues
+         * por offset fijo, un registro corrupto correria todos los
+         * siguientes). No reintentamos: si fallo por espacio, reintentar no
+         * arregla nada. */
+        ESP_LOGE(TAG, "escritura incompleta del viaje en %s (se pierde este viaje)", TRIPS_FILE);
+        return;
+    }
     ESP_LOGI(TAG, "viaje guardado: %lus, %.1fkm, %.2fL, %uRPM max",
              (unsigned long)rec.duration_s, rec.distance_km, rec.fuel_used_l, rec.max_rpm);
 

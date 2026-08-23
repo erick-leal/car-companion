@@ -156,7 +156,31 @@ Menú → **Mantenimiento**.
   real que recomienda el manual del Maxus T60, avisar para ajustar
   `STORAGE_OIL_CHANGE_INTERVAL_KM` en `firmware/components/storage/include/storage.h`.
 
-## 6. Si algo no se ve bien
+## 6. Logs nuevos para revisar después de manejar (22 ago)
+
+Estos logs quedan en el M5 mientras maneja — no hace falta estar mirando la
+pantalla, se pueden revisar después conectando el M5 a la Mac y usando la
+captura serial de la sección 7. Todos con tag `pid_engine`:
+
+- **`OBD desconectado, reintentando...`** — el adaptador se cayó (normal al
+  arrancar el motor: el Vgate se resetea con la baja de tensión del
+  arranque). Después de esto el dashboard debería volver solo a "SIN OBD" y
+  reconectar solo cuando el adaptador vuelva a responder — antes de esta
+  fecha, el dashboard se quedaba pegado en "OBD OK" con datos viejos después
+  de una desconexión real, sin volver nunca a "SIN OBD". Si ves eso pasar de
+  nuevo, es un bug real, avisar.
+- **`todavia sin conexion OBD (Xs)`** — aparece cada ~60s mientras no hay
+  conexión (ya sea porque nunca conectó, o después de una caída). Si el
+  dashboard nunca mostró "OBD OK" en toda la manejada, este log cada 60s
+  confirma que el firmware seguía vivo intentando reconectar (no se colgó
+  en silencio) — si en cambio el log se corta de golpe y no vuelve a
+  aparecer nada, ahí sí hay un problema real (reinicio, crash).
+- **`salud: heap_libre=X min_heap_visto=Y obd_conectado=Z uptime=Ns`** —
+  cada 5min. Si `heap_libre` va bajando de forma sostenida a lo largo de
+  varias horas de manejo (no solo un vaivén normal), es un memory leak real
+  y sirve para saber más o menos cuándo empezó a degradarse.
+
+## 7. Si algo no se ve bien
 
 - **Texto raro / caracteres vacíos**: los acentos (á, é, í, ó, ú, ñ) no se
   ven bien con la fuente actual — si aparece un cuadrado vacío en vez de una
@@ -199,3 +223,7 @@ Menú → **Mantenimiento**.
       "CAMBIO REALIZADO" resetea bien la cuenta, y que el intervalo de
       10.000 km hace sentido (o conseguir el valor real del manual del T60
       para ajustarlo).
+- [ ] Reconexión real: confirmar que al arrancar el motor (donde el Vgate
+      típicamente se resetea por la baja de tensión), el dashboard pasa por
+      "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado
+      mostrando datos viejos como si siguieran en vivo.

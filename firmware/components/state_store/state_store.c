@@ -84,6 +84,19 @@ esp_err_t state_store_get(vehicle_state_t *out)
     return ESP_OK;
 }
 
+esp_err_t state_store_set_disconnected(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.data_valid = false;
+    s_state.dtc_read_in_progress = false;  // no vamos a recibir esa respuesta si estaba en vuelo
+    s_state.dtc_clear_in_progress = false;
+    s_state.last_update_us = esp_timer_get_time();
+    unlock();
+    notify_subscribers();
+    return ESP_OK;
+}
+
 esp_err_t state_store_subscribe(state_change_cb_t cb, void *ctx)
 {
     for (int i = 0; i < STATE_STORE_MAX_SUBSCRIBERS; i++) {

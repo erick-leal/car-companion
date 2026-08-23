@@ -313,6 +313,41 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Robustez para manejo real (22 ago)
+
+Repaso pensando en errores típicos de una manejada real (no del escritorio):
+caída de BLE al arrancar el motor (el Vgate se resetea con la baja de
+tensión del arranque), túneles/estacionamientos, adaptador que nunca se
+enchufa, flash llena o corrupta. Encontrado y arreglado:
+
+- **Bug real: `data_valid` nunca volvía a `false`.** Una vez que llegaba la
+  primera lectura OBD, `state_store` marcaba `data_valid=true` para siempre
+  — no existía ningún setter que lo volviera a `false`. Si el OBD se
+  desconectaba a mitad de una manejada (escenario normal, no raro), el
+  dashboard se quedaba mostrando "OBD OK" con los últimos datos conocidos
+  como si siguieran siendo en vivo. Peor: `storage` usa justo ese flag para
+  cerrar un viaje cuando el OBD se desconecta (ver `storage.c`) — esa rama
+  nunca se ejecutaba, así que todos los viajes terminaban solo por el
+  timeout de 15min de inactividad, nunca por desconexión real. Arreglado con
+  `state_store_set_disconnected()`, llamado desde `pid_engine` apenas
+  detecta la transición conectado→desconectado.
+- **Logs de diagnóstico para revisar después de manejar**, todos vía
+  `ESP_LOGW`/`ESP_LOGI` con tag `pid_engine`, capturables con la técnica de
+  `docs/guia-de-pruebas.md`:
+  - `"OBD desconectado, reintentando..."` — cada vez que se cae la conexión.
+  - `"todavia sin conexion OBD (Xs)"` — cada ~60s mientras sigue sin
+    conectar (ya sea porque nunca conectó desde el arranque, o después de
+    una caída real). Sirve para distinguir "sigue buscando el adaptador" de
+    "se colgó en silencio" al revisar el log de una manejada.
+  - `"salud: heap_libre=X min_heap_visto=Y obd_conectado=Z uptime=Ns"` — cada
+    5min, para pescar un memory leak lento en una manejada larga sin tener
+    que estar mirando la pantalla en el momento.
+- **Escrituras a flash (`storage.c`) ahora verifican el resultado de
+  `fwrite`** en vez de asumir que siempre funciona — si la partición se
+  queda sin espacio o hay un error real de flash, ahora queda un
+  `ESP_LOGE` explicando qué se perdió (el viaje en curso, o el
+  odómetro/último cambio de aceite) en vez de fallar en silencio.
+
 ## Próximo paso concreto
 
 1. ~~Instalar ESP-IDF y correr `idf.py build`~~ — hecho el 19 ago.
