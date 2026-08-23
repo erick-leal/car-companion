@@ -71,6 +71,20 @@ static int16_t  s_max_coolant;
 static float    s_min_battery;
 static bool     s_check_engine_seen;
 
+/* BUG REAL ENCONTRADO EN MANEJO (22 ago): los dos primeros viajes de prueba
+ * mostraron "Bateria min: 0.0V" siempre, imposible con el auto andando (si
+ * el ECU responde al OBD, tiene que tener bateria). Causa: la bateria se lee
+ * por ATRV una vez por vuelta de polling (al final, ver pid_engine.c), asi
+ * que battery_voltage en state_store puede seguir en su default de 0.0
+ * (struct recien inicializado) el instante exacto en que arranca el viaje
+ * (dispara con el primer RPM>0, que llega ANTES que la primera respuesta de
+ * ATRV en esa vuelta). Una vez que s_min_battery quedaba en 0.0, ningun
+ * valor real (12-14V) es "menor", asi que se quedaba pegado ahi para
+ * siempre. Se trata 0.0V como "sin lectura todavia" (mismo criterio que ya
+ * se usa en otros lados del codebase, ej. boost_pressure_kpa con
+ * INT16_MIN) en vez de un valor real a comparar. */
+#define BATTERY_NO_READING_SENTINEL 999.0f
+
 static void start_trip(int64_t now_us, const vehicle_state_t *state)
 {
     s_in_trip = true;
@@ -82,7 +96,7 @@ static void start_trip(int64_t now_us, const vehicle_state_t *state)
     s_speed_samples = 0;
     s_max_rpm = state->rpm;
     s_max_coolant = state->coolant_temp_c;
-    s_min_battery = state->battery_voltage;
+    s_min_battery = state->battery_voltage > 0.0f ? state->battery_voltage : BATTERY_NO_READING_SENTINEL;
     s_check_engine_seen = state->check_engine_on;
     ESP_LOGI(TAG, "viaje iniciado");
 }
@@ -97,7 +111,10 @@ static void end_trip(int64_t now_us)
         .avg_speed_kmh  = s_speed_samples > 0 ? (uint16_t)(s_speed_sum / s_speed_samples) : 0,
         .max_rpm        = s_max_rpm,
         .max_coolant_c  = s_max_coolant,
-        .min_battery_v  = s_min_battery,
+        /* Si nunca llego una lectura real de bateria en todo el viaje, se
+         * guarda 0.0 -- mismo "0 = sin dato" que ya usan otros campos del
+         * struct (ver storage.h/trip_record_t), no un valor real medido. */
+        .min_battery_v  = s_min_battery == BATTERY_NO_READING_SENTINEL ? 0.0f : s_min_battery,
         .check_engine_seen = s_check_engine_seen,
     };
     s_in_trip = false;
@@ -168,7 +185,7 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     s_speed_samples++;
     if (state->rpm > s_max_rpm) s_max_rpm = state->rpm;
     if (state->coolant_temp_c > s_max_coolant) s_max_coolant = state->coolant_temp_c;
-    if (state->battery_voltage < s_min_battery) s_min_battery = state->battery_voltage;
+    if (state->battery_voltage > 0.0f && state->battery_voltage < s_min_battery) s_min_battery = state->battery_voltage;
     if (state->check_engine_on) s_check_engine_seen = true;
 
     if ((now - s_last_rpm_nonzero_us) > (int64_t)TRIP_END_IDLE_TIMEOUT_S * 1000000) {

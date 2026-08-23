@@ -264,7 +264,14 @@ static void update_diag_widgets(const vehicle_state_t *state)
     int off = 0;
     off += snprintf(body + off, sizeof(body) - off,
                      "CONEXION: %s\n", state->data_valid ? "OBD OK" : "SIN OBD");
-    if (state->data_valid) {
+    /* "hace Xs" en base a last_update_us != 0, NO a data_valid: desde que
+     * agregamos state_store_set_disconnected() (22 ago), last_update_us
+     * tambien se actualiza al momento de una desconexion real, asi que esto
+     * muestra "hace cuanto se desconecto" en vez de decir "nunca" despues de
+     * haber tenido datos reales — antes de este fix, volver a esta pantalla
+     * con el auto ya apagado siempre decia "nunca" aunque hubiera datos
+     * minutos antes (encontrado en la manejada de prueba del 22 ago). */
+    if (state->last_update_us != 0) {
         int64_t age_s = (esp_timer_get_time() - state->last_update_us) / 1000000;
         off += snprintf(body + off, sizeof(body) - off,
                          "ACTUALIZADO: hace %llds\n", (long long)age_s);
