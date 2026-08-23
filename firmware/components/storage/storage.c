@@ -11,6 +11,7 @@ static const char *TAG = "storage";
 #define MOUNT_POINT   "/storage"
 #define TRIPS_FILE    MOUNT_POINT "/trips.bin"
 #define MAINT_FILE    MOUNT_POINT "/maint.bin"
+#define SYNC_FILE     MOUNT_POINT "/sync.bin"
 
 /* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. 15min
  * (no 2) porque una parada a cargar combustible + comprar algo facil entra
@@ -66,6 +67,40 @@ static void save_maintenance(void)
     fclose(f);
     if (written != 1) {
         ESP_LOGE(TAG, "escritura incompleta de %s (el odometro/ultimo cambio puede haber quedado desactualizado)", MAINT_FILE);
+    }
+}
+
+/* Cursor de sincronizacion: cuantos viajes (contando desde el mas viejo, en
+ * orden de trips.bin) ya se mandaron al backend con exito. Cache en RAM,
+ * escritura directa a flash en cada cambio (se actualiza poco: solo despues
+ * de un POST exitoso de connectivity). */
+static uint32_t s_synced_trip_count;
+
+static void load_sync_state(void)
+{
+    FILE *f = fopen(SYNC_FILE, "rb");
+    if (f == NULL) {
+        s_synced_trip_count = 0; // primer boot, o connectivity nunca sincronizo nada todavia
+        return;
+    }
+    if (fread(&s_synced_trip_count, sizeof(s_synced_trip_count), 1, f) != 1) {
+        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo, reiniciando cursor de sync en 0", SYNC_FILE);
+        s_synced_trip_count = 0;
+    }
+    fclose(f);
+}
+
+static void save_sync_state(void)
+{
+    FILE *f = fopen(SYNC_FILE, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el cursor de sync", SYNC_FILE);
+        return;
+    }
+    size_t written = fwrite(&s_synced_trip_count, sizeof(s_synced_trip_count), 1, f);
+    fclose(f);
+    if (written != 1) {
+        ESP_LOGE(TAG, "escritura incompleta de %s (puede re-sincronizar viajes ya mandados)", SYNC_FILE);
     }
 }
 
@@ -221,12 +256,15 @@ esp_err_t storage_init(void)
     }
 
     load_maintenance();
+    load_sync_state();
     state_store_subscribe(on_state_change, NULL);
 
     uint32_t count = 0;
     storage_get_trip_count(&count);
-    ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados, odometro %.1fkm)",
-             MOUNT_POINT, (unsigned long)count, s_maint.odometer_km);
+    ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados, %lu sin sincronizar, odometro %.1fkm)",
+             MOUNT_POINT, (unsigned long)count,
+             (unsigned long)(count > s_synced_trip_count ? count - s_synced_trip_count : 0),
+             s_maint.odometer_km);
     return ESP_OK;
 }
 
@@ -261,11 +299,20 @@ esp_err_t storage_get_trip(uint32_t index, trip_record_t *out)
 
 esp_err_t storage_get_pending_sync_count(uint32_t *out_count)
 {
-    /* Sin `connectivity` todavia no se sincronizo nunca nada, asi que
-     * "pendiente" es lo mismo que "total" por ahora. El dia que
-     * connectivity exista, esta funcion va a necesitar guardar un cursor
-     * (hasta que indice ya se mando) en vez de devolver el total siempre. */
-    return storage_get_trip_count(out_count);
+    uint32_t total;
+    esp_err_t err = storage_get_trip_count(&total);
+    if (err != ESP_OK) return err;
+    *out_count = total > s_synced_trip_count ? total - s_synced_trip_count : 0;
+    return ESP_OK;
+}
+
+esp_err_t storage_mark_trips_synced(uint32_t up_to_count)
+{
+    if (up_to_count > s_synced_trip_count) {
+        s_synced_trip_count = up_to_count;
+        save_sync_state();
+    }
+    return ESP_OK;
 }
 
 esp_err_t storage_get_maintenance(maintenance_state_t *out)

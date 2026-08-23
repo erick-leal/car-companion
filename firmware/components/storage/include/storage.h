@@ -63,11 +63,19 @@ esp_err_t storage_get_trip_count(uint32_t *out_count);
 esp_err_t storage_get_trip(uint32_t index, trip_record_t *out);
 
 /**
- * Cuantos viajes todavia no se mandaron al backend. Hoy (sin `connectivity`
- * implementado) es simplemente el total, porque nunca se sincronizo nada
- * — la funcion ya existe para que connectivity la use tal cual cuando este.
+ * Cuantos viajes todavia no se mandaron al backend. Los viajes son append-only
+ * (nunca se borran de trips.bin), asi que un cursor "cuantos ya se
+ * sincronizaron, contando desde el mas viejo" alcanza — pending = total -
+ * sincronizados. El cursor se persiste en /storage/sync.bin.
  */
 esp_err_t storage_get_pending_sync_count(uint32_t *out_count);
+
+/**
+ * Marca los primeros `up_to_count` viajes (indices 0..up_to_count-1, en
+ * orden del archivo) como ya sincronizados. `connectivity` la llama despues
+ * de un POST exitoso a /api/v1/sync/trips.
+ */
+esp_err_t storage_mark_trips_synced(uint32_t up_to_count);
 
 /** Estado actual de mantenimiento (odometro + km restantes de aceite y filtro). */
 esp_err_t storage_get_maintenance(maintenance_state_t *out);

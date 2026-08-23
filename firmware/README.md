@@ -256,18 +256,18 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
   así que tiene que ir DESPUÉS de `state_store_init()` — al revés crashea
   (mutex nulo), se probó en hardware real el 22 ago.
 
-  **Limitación real, no resuelta:** sin `connectivity` (WiFi/NTP) no hay
-  hora de pared confiable — `start_time_s` de cada viaje es segundos desde
-  el arranque del ESP32, no una fecha real. Se resuelve cuando
-  `connectivity` sincronice con el backend (que sí sabe la hora real de
-  cuándo llegó cada sync).
+  `start_time_s` de cada viaje sigue siendo segundos desde el arranque del
+  ESP32 en el archivo on-disk (no se tocó ese formato) — pero `connectivity`
+  (ver más abajo) ya resuelve la hora real **al armar el JSON de sync**, vía
+  SNTP + `boot_epoch = time(NULL) - esp_timer_get_time()/1e6`.
 
   Confirmado en hardware real: la partición monta, el filesystem se
   formatea solo en el primer arranque, no rompe nada del resto del sistema.
   **No confirmado todavía:** el ciclo completo de un viaje real (arrancar,
   manejar, apagar, ver el registro guardado) — falta probarlo la próxima
   vez que se maneje el auto con esto flasheado.
-- ❌ `connectivity` — sigue sin implementar (WiFi, sync con el backend).
+- ✅ `connectivity` — implementado el 23 ago (WiFi + sync HTTP con el
+  backend). Ver sección dedicada más abajo.
 
 ### Trampas de bring-up del Core2 (costaron una tarde entera, no repetirlas)
 
@@ -312,6 +312,63 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
 5. `lv_disp_flush_ready()` va en el callback `on_color_trans_done` del panel,
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
+
+## `connectivity`: sync de viajes al backend (23 ago)
+
+Implementado el componente `connectivity` (hasta ahora solo un stub sin
+usar). Flujo: WiFi STA + SNTP arrancan en `connectivity_init()`; una tarea
+de fondo chequea cada 30s si hay WiFi conectado y viajes pendientes — si no
+hay nada que hacer, el chequeo es gratis (cero llamados de red). Cuando
+corresponde: login contra `/auth/login` (credenciales de
+`connectivity_secrets.h`, no versionado) para sacar un JWT fresco, registro
+idempotente del dispositivo (`device_uid` = MAC en hex) contra
+`/devices`, y `POST /sync/trips` con hasta `SYNC_BATCH_MAX` (20) viajes por
+tanda. `storage` ahora guarda un cursor real (`/storage/sync.bin`,
+`storage_mark_trips_synced`) — antes `storage_get_pending_sync_count`
+siempre devolvía el total, nunca se había sincronizado nada.
+
+**Setup manual necesario (no lo puedo hacer yo por vos):**
+```bash
+cp firmware/components/connectivity/include/connectivity_secrets.example.h \
+   firmware/components/connectivity/include/connectivity_secrets.h
+```
+y completar `connectivity_secrets.h` con tu WiFi de casa y tu email/contraseña
+reales del backend (ese archivo no se sube a git). **No me pases la
+contraseña por acá** — editalo vos directo con un editor de texto.
+
+**Decisiones tomadas con el usuario (23 ago, ver conversación):**
+- Auth: login hardcodeado (no token de dispositivo separado — eso queda
+  pendiente, ver `docs/api-contract.md`).
+- Disparo: automático en segundo plano, no un botón manual.
+
+**Bugs reales encontrados armando esto (los dos antes de llegar a probar
+login/sync real, que todavía no se probó — falta que Erick complete
+`connectivity_secrets.h` con sus datos reales):**
+- **IRAM overflow al linkear** (`iram0_0_seg overflowed by 6920 bytes`):
+  BLE + WiFi + mbedTLS ya están justos de IRAM en el ESP32 clásico.
+  Arreglado bajando `CONFIG_ESP32_REV_MIN` de "v0.0" (default) a "v3.0" —
+  el M5 real es v3.1 (confirmado en el log de boot) y esto desactiva
+  `SPIRAM_CACHE_WORKAROUND`, un fix de compilador que el propio Kconfig
+  documenta como "no requerido para el rev 3 en adelante".
+- **Crash real en hardware: `esp_wifi_init()` fallaba con "malloc buffer
+  fail"** (RAM interna agotada, compartida entre NimBLE + LVGL + WiFi) y
+  el código lo envolvía en `ESP_ERROR_CHECK` — eso llama a `abort()` y
+  **reinicia todo el dispositivo**, justo lo que `connectivity.h` dice que
+  nunca puede pasar ("debe seguir funcionando como gauge OBD standalone").
+  Doble fix: (1) se sacaron todos los `ESP_ERROR_CHECK` de
+  `wifi_and_sntp_start()`, cada paso ahora loguea y devuelve un error
+  normal si falla; (2) se bajaron los buffers de WiFi
+  (`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM` y compañía, ver
+  `sdkconfig.defaults`) de los defaults pensados para "solo WiFi" a valores
+  chicos que alcanzan para sync HTTP ocasional. Confirmado en hardware:
+  arranca limpio, reintenta conectar WiFi sin crashear cuando la red no
+  existe (probado a propósito con credenciales de ejemplo).
+- El backend en Railway (`/health`, `/auth/login` con credenciales
+  incorrectas) responde exactamente como documenta `docs/api-contract.md` —
+  confirmado con `curl` desde afuera del firmware, así que el contrato que
+  asume `connectivity.c` es correcto. **Lo que falta probar de punta a
+  punta es el login/registro/sync real**, una vez que
+  `connectivity_secrets.h` tenga credenciales reales.
 
 ## Robustez para manejo real (22 ago)
 
@@ -415,6 +472,15 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
    velocidad siempre 0 y boost sin carga de turbo real).
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
    bitmask estándar, requieren ingeniería inversa. Ver `docs/pid-mapping.md`.
+10. ~~`connectivity`: WiFi + sync de viajes al backend~~ — hecho el 23 ago,
+   ver sección dedicada más arriba. **Falta el setup manual** (completar
+   `connectivity_secrets.h` con WiFi/credenciales reales, no lo puede hacer
+   el asistente) y **probar el login/registro/sync real** una vez hecho eso
+   — hasta ahora solo se confirmó que arranca sin crashear con credenciales
+   de ejemplo (WiFi nunca conecta, que es el comportamiento esperado) y que
+   el backend responde como se espera (probado con `curl` desde afuera del
+   firmware). Falta también decidir el token de dispositivo separado (ver
+   `docs/api-contract.md`) y definir la unidad de `avg_consumption`.
 10. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
    ago)**. El Core2 trae un MPU6886 (acelerómetro+giroscopio, confirmado en
    la fuente de M5Stack) en el mismo bus I2C que el AXP192/táctil, y se

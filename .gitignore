@@ -12,6 +12,8 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 firmware/dependencies.lock
+# credenciales reales de WiFi + login del backend — ver connectivity_secrets.example.h
+firmware/components/connectivity/include/connectivity_secrets.h
 
 # --- Backend (Node/TS) ---
 backend/node_modules/

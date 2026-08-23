@@ -61,3 +61,18 @@ Códigos de falla (DTC) de un viaje puntual — para la pantalla de diagnóstico
 - Modelo de PIDs propietarios por vehículo (para cuando se soporte más de un modelo).
 - Rate limiting de sync.
 - Formato exacto de autenticación del dispositivo (token de larga duración vs. por sesión).
+  **Estado real (23 ago):** el firmware (`connectivity`) usa por ahora login de
+  usuario (email/contraseña hardcodeados en `connectivity_secrets.h`, no
+  versionado) contra `/auth/login` para sacar un JWT fresco antes de cada
+  sync. Es un atajo consciente para v1 — la alternativa prolija (token de
+  dispositivo de larga duración, sin exponer la contraseña real del
+  usuario) queda pendiente.
+- **Unidad de `avg_consumption` sin definir** (23 ago): el campo existe en
+  `syncPayloadSchema` pero no dice si es L/100km, km/L, o algo distinto —
+  el firmware por ahora lo omite del payload de sync (es opcional) en vez
+  de inventar una unidad. Definir esto antes de que algo (app móvil,
+  dashboard) empiece a mostrarlo.
+- `trip_record_t` en el firmware no guarda los códigos DTC de cada viaje
+  individual (solo un `bool check_engine_seen`), así que `dtc_codes` en el
+  payload de sync también se omite por ahora — habría que decidir si vale
+  la pena guardar los códigos reales por viaje en `storage` para esto.

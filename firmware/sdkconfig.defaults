@@ -53,3 +53,25 @@ CONFIG_LV_COLOR_16_SWAP=y
 # La pantalla real usa muy pocos objetos (labels), pero subimos el pool con
 # margen para no volver a pisar esto.
 CONFIG_LV_MEM_SIZE_KILOBYTES=48
+
+# Revision minima de chip soportada: el M5 real es rev v3.1 (confirmado en el
+# log de boot). Bajarla de "v0.0" (default) a "v3.0" desactiva
+# SPIRAM_CACHE_WORKAROUND (un fix de compilador solo necesario para el bug de
+# cache de PSRAM del rev 1, "no requerido para el rev 3 en adelante" segun el
+# propio texto de ayuda del Kconfig) — sin esto, agregar WiFi (connectivity,
+# 23 ago) desbordaba iram0_0_seg por ~7KB al linkear (BLE + WiFi + TLS ya
+# estan justos de IRAM en el ESP32 clasico).
+CONFIG_ESP32_REV_MIN_3=y
+
+# WiFi (connectivity, 23 ago) comparte el ESP32 clasico con NimBLE (BT) y
+# LVGL, los tres justos de RAM interna. Los buffers de WiFi por default
+# (pensados para un dispositivo que SOLO hace WiFi) reservaban ~42KB de RAM
+# interna al arrancar y agotaban lo que quedaba libre -- esp_wifi_init()
+# fallaba con "malloc buffer fail" y (antes de sacar los ESP_ERROR_CHECK de
+# connectivity.c) eso *aborteaba todo el dispositivo*, justo lo que
+# connectivity.h dice que nunca debe pasar. Bajado a valores chicos:
+# suficiente para sync HTTP ocasional, no para WiFi de alto throughput.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16

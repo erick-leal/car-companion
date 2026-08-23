@@ -7,6 +7,21 @@ que capturar el log serial (ver la última sección) y revisarlo.
 
 ## Antes de salir
 
+0. **Una sola vez**, para que la sincronización con el backend funcione
+   (ver sección 6 más abajo): copiar la plantilla de credenciales y
+   completarla vos mismo con un editor de texto (no se la pases al asistente
+   por chat):
+   ```bash
+   cp firmware/components/connectivity/include/connectivity_secrets.example.h \
+      firmware/components/connectivity/include/connectivity_secrets.h
+   ```
+   Editar `connectivity_secrets.h` con tu WiFi de casa (`WIFI_SSID`,
+   `WIFI_PASSWORD`) y tu email/contraseña reales del backend
+   (`BACKEND_EMAIL`, `BACKEND_PASSWORD`). Ese archivo no se sube a git. Si
+   no lo completás, el dispositivo sigue funcionando normal como gauge OBD
+   — solo no va a poder sincronizar viajes (confirmado en hardware: con
+   credenciales de ejemplo, intenta conectar WiFi, falla, reintenta solo,
+   sin crashear nada).
 1. Con el M5 conectado por USB a la Mac, flashear la última versión:
    ```bash
    source ~/esp/esp-idf/export.sh
@@ -170,7 +185,39 @@ Menú → **Mantenimiento**.
   confirmó a ojo en el M5 real todavía, avisar si algún texto se ve cortado
   o los botones se superponen.
 
-## 6. Logs nuevos para revisar después de manejar (22 ago)
+## 6. Sincronización con el backend (nuevo, 23 ago)
+
+No es una pantalla — pasa solo en segundo plano. Requiere haber completado
+`connectivity_secrets.h` (ver paso 0 de "Antes de salir").
+
+- **Mientras manejás** (sin WiFi de casa cerca): no debería pasar nada
+  visible, ni logs de error repetidos por WiFi — eso es lo esperado, el
+  dispositivo sigue funcionando como gauge normal.
+- **Al volver a casa**, con el M5 todavía prendido y cerca del WiFi: en el
+  log serial (ver sección 7 para cómo capturarlo) buscar:
+  - `connectivity: WiFi conectado (IP obtenida), sincronizando hora por SNTP...`
+  - `connectivity: sync: N viaje(s) sincronizados con el backend` — esto
+    confirma que el login, el registro del dispositivo, y el POST de
+    viajes funcionaron de punta a punta. **Esto todavía no se probó ni una
+    vez** (solo se confirmó que arranca sin crashear con credenciales de
+    ejemplo) — es lo más importante para validar de esta sección.
+  - Si en cambio aparece `connectivity: sync: no se pudo hacer login...` o
+    `...no se pudo registrar/confirmar el dispositivo...`, algo está mal en
+    `connectivity_secrets.h` (email/contraseña incorrectos, o WiFi con la
+    contraseña mal escrita) — revisar y volver a intentar (reintenta solo
+    cada 30s, no hace falta reiniciar nada).
+- Para confirmar del todo que llegó al backend, se puede pedir el historial
+  con `curl` (con tu propio login, no lo hagas pegándome tu contraseña a
+  mí):
+  ```bash
+  TOKEN=$(curl -s -X POST https://car-companion-production.up.railway.app/api/v1/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"email":"tu-email","password":"tu-contraseña"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+  curl -s https://car-companion-production.up.railway.app/api/v1/sync/trips \
+    -H "Authorization: Bearer $TOKEN"
+  ```
+
+## 7. Logs nuevos para revisar después de manejar (22 ago)
 
 Estos logs quedan en el M5 mientras maneja — no hace falta estar mirando la
 pantalla, se pueden revisar después conectando el M5 a la Mac y usando la
@@ -194,7 +241,7 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
   varias horas de manejo (no solo un vaivén normal), es un memory leak real
   y sirve para saber más o menos cuándo empezó a degradarse.
 
-## 7. Si algo no se ve bien
+## 8. Si algo no se ve bien
 
 - **Texto raro / caracteres vacíos**: los acentos (á, é, í, ó, ú, ñ) no se
   ven bien con la fuente actual — si aparece un cuadrado vacío en vez de una
@@ -241,3 +288,7 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
       típicamente se resetea por la baja de tensión), el dashboard pasa por
       "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado
       mostrando datos viejos como si siguieran en vivo.
+- [ ] Sync con el backend: completar `connectivity_secrets.h` con
+      credenciales reales, y confirmar en el log que aparece "sync: N
+      viaje(s) sincronizados" al volver cerca del WiFi de casa — esto
+      todavía no se probó ni una vez de punta a punta.
