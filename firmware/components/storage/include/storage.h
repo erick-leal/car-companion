@@ -33,6 +33,19 @@ typedef struct {
     bool     check_engine_seen; // si el CEL se prendio en algun momento del viaje
 } trip_record_t;
 
+/**
+ * Cada cuantos km toca cambiar el aceite. Estimacion para diesel common-rail
+ * con aceite semisintetico (uso mixto ciudad/carretera) — no es un dato del
+ * fabricante del Maxus T60, es un numero razonable de partida. Si el manual
+ * del auto da un intervalo distinto, cambiar esto por ese valor.
+ */
+#define STORAGE_OIL_CHANGE_INTERVAL_KM 10000.0f
+
+typedef struct {
+    float odometer_km;                    // suma de distance_km de todos los viajes reales guardados
+    float odometer_at_last_oil_change_km; // odometro al momento del ultimo cambio marcado; 0 = nunca se marco uno
+} maintenance_state_t;
+
 esp_err_t storage_init(void);
 
 /** Cantidad de viajes guardados en la particion local. */
@@ -47,3 +60,9 @@ esp_err_t storage_get_trip(uint32_t index, trip_record_t *out);
  * — la funcion ya existe para que connectivity la use tal cual cuando este.
  */
 esp_err_t storage_get_pending_sync_count(uint32_t *out_count);
+
+/** Estado actual de mantenimiento (odometro total + odometro del ultimo cambio). */
+esp_err_t storage_get_maintenance(maintenance_state_t *out);
+
+/** Marca "cambio de aceite hecho ahora": guarda el odometro actual como referencia. */
+esp_err_t storage_mark_oil_change_done(void);

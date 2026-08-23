@@ -10,6 +10,7 @@ static const char *TAG = "storage";
 
 #define MOUNT_POINT   "/storage"
 #define TRIPS_FILE    MOUNT_POINT "/trips.bin"
+#define MAINT_FILE    MOUNT_POINT "/maint.bin"
 
 /* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. 15min
  * (no 2) porque una parada a cargar combustible + comprar algo facil entra
@@ -18,6 +19,35 @@ static const char *TAG = "storage";
 #define TRIP_END_IDLE_TIMEOUT_S (15 * 60)
 
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
+
+/* Cache en RAM del estado de mantenimiento, con escritura directa a flash en
+ * cada cambio (se actualiza poco: al cerrar un viaje real y al marcar un
+ * cambio de aceite, no en cada muestra del OBD como los demas datos). */
+static maintenance_state_t s_maint;
+
+static void load_maintenance(void)
+{
+    FILE *f = fopen(MAINT_FILE, "rb");
+    if (f == NULL) {
+        memset(&s_maint, 0, sizeof(s_maint)); // primer boot: sin historial, todo en 0
+        return;
+    }
+    if (fread(&s_maint, sizeof(s_maint), 1, f) != 1) {
+        memset(&s_maint, 0, sizeof(s_maint));
+    }
+    fclose(f);
+}
+
+static void save_maintenance(void)
+{
+    FILE *f = fopen(MAINT_FILE, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "no se pudo abrir %s para guardar mantenimiento", MAINT_FILE);
+        return;
+    }
+    fwrite(&s_maint, sizeof(s_maint), 1, f);
+    fclose(f);
+}
 
 /* --- Estado del viaje en curso (RAM, se persiste recien al terminar) --- */
 static bool     s_in_trip;
@@ -80,6 +110,9 @@ static void end_trip(int64_t now_us)
     fclose(f);
     ESP_LOGI(TAG, "viaje guardado: %lus, %.1fkm, %.2fL, %uRPM max",
              (unsigned long)rec.duration_s, rec.distance_km, rec.fuel_used_l, rec.max_rpm);
+
+    s_maint.odometer_km += rec.distance_km;
+    save_maintenance();
 }
 
 static void on_state_change(const vehicle_state_t *state, void *ctx)
@@ -138,11 +171,13 @@ esp_err_t storage_init(void)
         return err;
     }
 
+    load_maintenance();
     state_store_subscribe(on_state_change, NULL);
 
     uint32_t count = 0;
     storage_get_trip_count(&count);
-    ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados)", MOUNT_POINT, (unsigned long)count);
+    ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados, odometro %.1fkm)",
+             MOUNT_POINT, (unsigned long)count, s_maint.odometer_km);
     return ESP_OK;
 }
 
@@ -182,4 +217,18 @@ esp_err_t storage_get_pending_sync_count(uint32_t *out_count)
      * connectivity exista, esta funcion va a necesitar guardar un cursor
      * (hasta que indice ya se mando) en vez de devolver el total siempre. */
     return storage_get_trip_count(out_count);
+}
+
+esp_err_t storage_get_maintenance(maintenance_state_t *out)
+{
+    *out = s_maint;
+    return ESP_OK;
+}
+
+esp_err_t storage_mark_oil_change_done(void)
+{
+    s_maint.odometer_at_last_oil_change_km = s_maint.odometer_km;
+    save_maintenance();
+    ESP_LOGI(TAG, "cambio de aceite marcado en %.1fkm", s_maint.odometer_km);
+    return ESP_OK;
 }

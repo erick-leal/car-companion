@@ -87,6 +87,7 @@ static lv_obj_t *s_lbl_trip_body;
 static uint32_t  s_trip_total;
 static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
 static lv_obj_t *s_lbl_diag_body;
+static lv_obj_t *s_lbl_maint_body;
 
 /* true solo mientras esa pantalla esta activa. Al cambiar de pantalla
  * lv_obj_clean() destruye los labels de la anterior y los punteros quedan
@@ -108,6 +109,7 @@ static void build_menu_screen(void);
 static void build_dtc_screen(void);
 static void build_trip_screen(void);
 static void build_diag_screen(void);
+static void build_maint_screen(void);
 
 /* Crea una tarjeta con titulo chico arriba y valor grande abajo. Devuelve el
  * label del valor, que es lo unico que se actualiza despues. */
@@ -404,43 +406,6 @@ static void back_to_menu_event_cb(lv_event_t *e)
     build_menu_screen();
 }
 
-static void build_placeholder_screen(const char *titulo, const char *detalle)
-{
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_clean(scr);
-    s_dashboard_active = false;
-    s_dtc_screen_active = false;
-    s_diag_screen_active = false;
-    lv_obj_set_style_bg_color(scr, COL_BG, 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *back = lv_btn_create(scr);
-    lv_obj_set_size(back, 88, 24);
-    lv_obj_set_pos(back, 6, 4);
-    lv_obj_set_style_bg_color(back, COL_CARD, 0);
-    lv_obj_set_style_radius(back, 5, 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
-    lv_obj_add_event_cb(back, back_to_menu_event_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *back_lbl = lv_label_create(back);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(back_lbl, COL_ACCENT, 0);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
-    lv_obj_center(back_lbl);
-
-    lv_obj_t *t = lv_label_create(scr);
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(t, COL_VALUE, 0);
-    lv_label_set_text(t, titulo);
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, -20);
-
-    lv_obj_t *d = lv_label_create(scr);
-    lv_obj_set_style_text_font(d, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(d, COL_CAPTION, 0);
-    lv_label_set_text(d, detalle);
-    lv_obj_align(d, LV_ALIGN_CENTER, 0, 14);
-}
-
 static void leer_dtc_event_cb(lv_event_t *e)
 {
     (void)e;
@@ -703,6 +668,103 @@ static void build_trip_screen(void)
     render_trip_screen_content();
 }
 
+/* --- Pantalla de Mantenimiento: solo cambio de aceite por ahora, calculado
+ * con el odometro que `storage` va acumulando de los viajes reales. No es
+ * una pantalla "en vivo": solo cambia al cerrar un viaje o marcar un
+ * cambio, asi que se re-renderiza a demanda como Viaje, sin suscribirse a
+ * on_state_change. */
+static void render_maint_screen_content(void)
+{
+    if (s_lbl_maint_body == NULL) return;
+
+    maintenance_state_t m;
+    storage_get_maintenance(&m);
+
+    /* odometro_at_last == 0 se interpreta como "nunca se marco un cambio"
+     * (ver storage.h) — en la practica nadie marca un cambio a exactamente
+     * 0km acumulados. */
+    bool ever_marked = m.odometer_at_last_oil_change_km > 0.0f;
+    float since_km = m.odometer_km - m.odometer_at_last_oil_change_km;
+    float remaining_km = STORAGE_OIL_CHANGE_INTERVAL_KM - since_km;
+
+    char body[220];
+    int off = 0;
+    off += snprintf(body + off, sizeof(body) - off, "ODOMETRO TOTAL: %.0f km\n\n", m.odometer_km);
+
+    if (!ever_marked) {
+        off += snprintf(body + off, sizeof(body) - off, "ULTIMO CAMBIO: sin registrar\n");
+    } else {
+        off += snprintf(body + off, sizeof(body) - off, "ULTIMO CAMBIO: en %.0f km\n", m.odometer_at_last_oil_change_km);
+    }
+
+    lv_color_t col;
+    if (remaining_km <= 0) {
+        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: VENCIDO hace %.0f km", -remaining_km);
+        col = COL_DANGER;
+    } else if (remaining_km <= 1000) {
+        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: faltan %.0f km", remaining_km);
+        col = COL_WARN;
+    } else {
+        snprintf(body + off, sizeof(body) - off, "PROX. CAMBIO: faltan %.0f km", remaining_km);
+        col = COL_OK;
+    }
+
+    lv_label_set_text(s_lbl_maint_body, body);
+    lv_obj_set_style_text_color(s_lbl_maint_body, col, 0);
+}
+
+static void marcar_cambio_event_cb(lv_event_t *e)
+{
+    (void)e;
+    storage_mark_oil_change_done();
+    render_maint_screen_content();
+}
+
+static void build_maint_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    s_dashboard_active = false;
+    s_dtc_screen_active = false;
+    s_diag_screen_active = false;
+    lv_obj_set_style_bg_color(scr, COL_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_btn_create(scr);
+    lv_obj_set_size(back, 88, 24);
+    lv_obj_set_pos(back, 6, 4);
+    lv_obj_set_style_bg_color(back, COL_CARD, 0);
+    lv_obj_set_style_radius(back, 5, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, back_to_menu_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(back_lbl, COL_ACCENT, 0);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *mark_btn = lv_btn_create(scr);
+    lv_obj_set_size(mark_btn, 160, 24);
+    lv_obj_set_pos(mark_btn, 154, 4);
+    lv_obj_set_style_bg_color(mark_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(mark_btn, 5, 0);
+    lv_obj_set_style_shadow_width(mark_btn, 0, 0);
+    lv_obj_add_event_cb(mark_btn, marcar_cambio_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *mark_lbl = lv_label_create(mark_btn);
+    lv_obj_set_style_text_font(mark_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(mark_lbl, COL_ACCENT, 0);
+    lv_label_set_text(mark_lbl, LV_SYMBOL_OK " CAMBIO REALIZADO");
+    lv_obj_center(mark_lbl);
+
+    s_lbl_maint_body = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_maint_body, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(s_lbl_maint_body, 300);
+    lv_obj_align(s_lbl_maint_body, LV_ALIGN_TOP_LEFT, 10, 42);
+
+    render_maint_screen_content();
+}
+
 /* --- Menu --- */
 
 typedef enum {
@@ -730,7 +792,7 @@ static void menu_item_event_cb(lv_event_t *e)
             build_diag_screen();
             break;
         case MENU_MANTENIMIENTO:
-            build_placeholder_screen("MANTENIMIENTO", "Service, filtros, aceite");
+            build_maint_screen();
             break;
     }
 }
@@ -797,13 +859,6 @@ void ui_show_menu_screen(void)
     lvgl_unlock();
 }
 
-static void show_placeholder_locked(const char *titulo, const char *detalle)
-{
-    if (!lvgl_lock(1000)) return;
-    build_placeholder_screen(titulo, detalle);
-    lvgl_unlock();
-}
-
 void ui_show_trip_stats_screen(void)
 {
     if (!lvgl_lock(1000)) return;
@@ -824,7 +879,9 @@ void ui_show_diagnostics_screen(void)
 }
 void ui_show_maintenance_screen(void)
 {
-    show_placeholder_locked("MANTENIMIENTO", "Service, filtros, aceite");
+    if (!lvgl_lock(1000)) return;
+    build_maint_screen();
+    lvgl_unlock();
 }
 
 /* --- Flush de LVGL hacia el panel real ---

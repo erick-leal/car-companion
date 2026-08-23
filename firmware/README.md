@@ -341,9 +341,18 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
      en el dashboard (carga motor, temp admisión/ambiente, presión
      barométrica, presión de riel) + estado de conexión y hace cuánto llegó
      el último dato. Solo lectura, se actualiza sola vía `state_store`.
-   - **Mantenimiento** — service, filtros, aceite. Puede reusar `storage`.
-     Pendiente: necesita decisiones de producto primero (¿qué intervalos?
-     ¿cómo se resetea un contador de service?).
+   - ~~**Mantenimiento**~~ — hecho el 22 ago: por ahora solo cambio de
+     aceite. `storage` acumula un odómetro (`odometer_km`, suma de
+     `distance_km` de cada viaje real guardado) y guarda el odómetro del
+     último cambio marcado (`odometer_at_last_oil_change_km`) en
+     `/storage/maint.bin`. La pantalla muestra el odómetro total, cuándo fue
+     el último cambio, y si falta o está vencido contra un intervalo fijo de
+     `STORAGE_OIL_CHANGE_INTERVAL_KM` = 10.000 km (estimación para diesel
+     semisintético uso mixto, **no** es el dato del manual del Maxus —
+     ajustar si se consigue el valor real). Botón "CAMBIO REALIZADO" marca
+     el cambio sin confirmación (acción de bajo riesgo, solo resetea un
+     contador). **Falta probar con un odómetro real** (hoy solo se vio en
+     0km, sin viajes guardados).
 8. Probar el dashboard **manejando** (hasta ahora solo se validó detenido:
    velocidad siempre 0 y boost sin carga de turbo real).
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
