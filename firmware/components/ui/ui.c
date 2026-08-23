@@ -3,6 +3,7 @@
 #include "core2_display.h"
 #include "core2_touch.h"
 #include "state_store.h"
+#include "storage.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
@@ -80,6 +81,10 @@ static lv_obj_t *s_lbl_status;
 static lv_obj_t *s_lbl_cel;
 static lv_obj_t *s_lbl_m5batt;
 static lv_obj_t *s_lbl_dtc_body;
+static lv_obj_t *s_lbl_trip_header;
+static lv_obj_t *s_lbl_trip_body;
+static uint32_t  s_trip_total;
+static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
 
 /* true solo mientras esa pantalla esta activa. Al cambiar de pantalla
  * lv_obj_clean() destruye los labels de la anterior y los punteros quedan
@@ -98,6 +103,7 @@ static bool s_subscribed;
 static void build_main_screen(void);
 static void build_menu_screen(void);
 static void build_dtc_screen(void);
+static void build_trip_screen(void);
 
 /* Crea una tarjeta con titulo chico arriba y valor grande abajo. Devuelve el
  * label del valor, que es lo unico que se actualiza despues. */
@@ -470,6 +476,154 @@ static void build_dtc_screen(void)
     }
 }
 
+/* --- Pantalla de Viaje: historial guardado por `storage` ---
+ * s_trip_index es orden de archivo (0 = mas viejo), NO orden cronologico
+ * real: start_time_s de cada viaje es segundos desde el boot del ESP32
+ * (ver storage.h), y ESE numero se reinicia en cada reset — asi que NO sirve
+ * para ordenar entre reinicios. El orden del archivo (append-only) si es
+ * cronologicamente correcto, por eso lo usamos para "Viaje N de TOTAL" en
+ * vez de mostrar una fecha/hora que no tenemos como calcular de verdad. */
+static void render_trip_screen_content(void)
+{
+    uint32_t count = 0;
+    storage_get_trip_count(&count);
+    s_trip_total = count;
+
+    if (count == 0) {
+        lv_label_set_text(s_lbl_trip_header, "SIN VIAJES");
+        lv_label_set_text(s_lbl_trip_body,
+            "Todavia no hay viajes guardados.\n\n"
+            "Maneja al menos 5 minutos\npara que se guarde el primero.");
+        lv_obj_set_style_text_color(s_lbl_trip_body, COL_CAPTION, 0);
+        return;
+    }
+
+    if (s_trip_index >= count) {
+        s_trip_index = count - 1; // el mas reciente, si el indice quedo viejo
+    }
+
+    trip_record_t trip;
+    if (storage_get_trip(s_trip_index, &trip) != ESP_OK) {
+        lv_label_set_text(s_lbl_trip_header, "");
+        lv_label_set_text(s_lbl_trip_body, "Error leyendo el viaje guardado.");
+        lv_obj_set_style_text_color(s_lbl_trip_body, COL_DANGER, 0);
+        return;
+    }
+
+    char header[24];
+    snprintf(header, sizeof(header), "VIAJE %lu/%lu",
+             (unsigned long)(s_trip_index + 1), (unsigned long)count);
+    lv_label_set_text(s_lbl_trip_header, header);
+
+    char dur[16];
+    uint32_t h = trip.duration_s / 3600;
+    uint32_t m = (trip.duration_s % 3600) / 60;
+    if (h > 0) {
+        snprintf(dur, sizeof(dur), "%luh %lum", (unsigned long)h, (unsigned long)m);
+    } else {
+        snprintf(dur, sizeof(dur), "%lu min", (unsigned long)m);
+    }
+
+    char body[220];
+    snprintf(body, sizeof(body),
+             "Duracion: %s\n"
+             "Distancia: %.1f km\n"
+             "Combustible: %.2f L\n"
+             "Vel. promedio: %u km/h\n"
+             "RPM max: %u\n"
+             "Temp max: %d C\n"
+             "Bateria min: %.1f V\n"
+             "Check engine: %s",
+             dur, (double)trip.distance_km, (double)trip.fuel_used_l, trip.avg_speed_kmh,
+             trip.max_rpm, trip.max_coolant_c, (double)trip.min_battery_v,
+             trip.check_engine_seen ? "si" : "no");
+    lv_label_set_text(s_lbl_trip_body, body);
+    lv_obj_set_style_text_color(s_lbl_trip_body,
+                                 trip.check_engine_seen ? COL_WARN : COL_VALUE, 0);
+}
+
+static void trip_prev_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_trip_total == 0) return;
+    s_trip_index = (s_trip_index == 0) ? (s_trip_total - 1) : (s_trip_index - 1);
+    render_trip_screen_content();
+}
+
+static void trip_next_event_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_trip_total == 0) return;
+    s_trip_index = (s_trip_index + 1) % s_trip_total;
+    render_trip_screen_content();
+}
+
+static void build_trip_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    s_dashboard_active = false;
+    s_dtc_screen_active = false;
+    lv_obj_set_style_bg_color(scr, COL_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_btn_create(scr);
+    lv_obj_set_size(back, 88, 24);
+    lv_obj_set_pos(back, 6, 4);
+    lv_obj_set_style_bg_color(back, COL_CARD, 0);
+    lv_obj_set_style_radius(back, 5, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, back_to_menu_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back);
+    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(back_lbl, COL_ACCENT, 0);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
+    lv_obj_center(back_lbl);
+
+    lv_obj_t *prev_btn = lv_btn_create(scr);
+    lv_obj_set_size(prev_btn, 44, 24);
+    lv_obj_set_pos(prev_btn, 100, 4);
+    lv_obj_set_style_bg_color(prev_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(prev_btn, 5, 0);
+    lv_obj_set_style_shadow_width(prev_btn, 0, 0);
+    lv_obj_add_event_cb(prev_btn, trip_prev_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *prev_lbl = lv_label_create(prev_btn);
+    lv_obj_set_style_text_color(prev_lbl, COL_ACCENT, 0);
+    lv_label_set_text(prev_lbl, LV_SYMBOL_LEFT);
+    lv_obj_center(prev_lbl);
+
+    lv_obj_t *next_btn = lv_btn_create(scr);
+    lv_obj_set_size(next_btn, 44, 24);
+    lv_obj_set_pos(next_btn, 150, 4);
+    lv_obj_set_style_bg_color(next_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(next_btn, 5, 0);
+    lv_obj_set_style_shadow_width(next_btn, 0, 0);
+    lv_obj_add_event_cb(next_btn, trip_next_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *next_lbl = lv_label_create(next_btn);
+    lv_obj_set_style_text_color(next_lbl, COL_ACCENT, 0);
+    lv_label_set_text(next_lbl, LV_SYMBOL_RIGHT);
+    lv_obj_center(next_lbl);
+
+    s_lbl_trip_header = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_trip_header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_trip_header, COL_CAPTION, 0);
+    lv_obj_align(s_lbl_trip_header, LV_ALIGN_TOP_RIGHT, -8, 8);
+
+    s_lbl_trip_body = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_trip_body, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_trip_body, COL_VALUE, 0);
+    lv_obj_set_width(s_lbl_trip_body, 300);
+    lv_obj_align(s_lbl_trip_body, LV_ALIGN_TOP_LEFT, 10, 42);
+
+    /* Al entrar siempre mostramos el viaje mas reciente (ultimo del
+     * archivo), no donde haya quedado la ultima vez. */
+    if (s_trip_total > 0 || storage_get_trip_count(&s_trip_total) == ESP_OK) {
+        s_trip_index = s_trip_total > 0 ? s_trip_total - 1 : 0;
+    }
+    render_trip_screen_content();
+}
+
 /* --- Menu --- */
 
 typedef enum {
@@ -488,7 +642,7 @@ static void menu_item_event_cb(lv_event_t *e)
             build_main_screen();
             break;
         case MENU_VIAJE:
-            build_placeholder_screen("VIAJE", "Distancia, consumo promedio, duracion");
+            build_trip_screen();
             break;
         case MENU_FALLAS:
             build_dtc_screen();
@@ -572,7 +726,9 @@ static void show_placeholder_locked(const char *titulo, const char *detalle)
 
 void ui_show_trip_stats_screen(void)
 {
-    show_placeholder_locked("VIAJE", "Distancia, consumo promedio, duracion");
+    if (!lvgl_lock(1000)) return;
+    build_trip_screen();
+    lvgl_unlock();
 }
 void ui_show_dtc_screen(void)
 {

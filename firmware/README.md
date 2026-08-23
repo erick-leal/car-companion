@@ -120,6 +120,17 @@ obd_driver → pid_engine → state_store → ui
 Esto es lo que te permite, más adelante, cambiar de adaptador OBD o agregar soporte
 para otro vehículo sin tocar una sola pantalla.
 
+**Excepción deliberada (22 ago):** `ui` sí importa `storage` directamente para
+leer el historial de viajes (pantalla Viaje). La regla de arriba protege contra
+que `ui` dependa de *cómo se adquieren* los datos del auto (BLE, PIDs, timing);
+leer una lista de registros ya persistidos es una preocupación distinta —no hay
+"cómo se llega al dato" que filtrar, es lectura de un archivo. Forzarlo a pasar
+por `state_store` (que modela el estado *actual* del vehículo, no un historial)
+hubiera significado inventar un mecanismo de paginación ahí solo para esto. Si
+en algún momento esto se siente mal (ej. varias pantallas necesitan lo mismo),
+vale la pena revisar. Ver `pid_engine`/`state_store` para el patrón de "buzón"
+que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
+
 ## Estado actual (Fase 1 en progreso)
 
 - ✅ `state_store` — implementado (mutex, setters, suscriptores).
