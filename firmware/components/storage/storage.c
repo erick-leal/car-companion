@@ -11,9 +11,36 @@
 static const char *TAG = "storage";
 
 #define MOUNT_POINT   "/storage"
-#define TRIPS_FILE    MOUNT_POINT "/trips.bin"
-#define MAINT_FILE    MOUNT_POINT "/maint.bin"
-#define SYNC_FILE     MOUNT_POINT "/sync.bin"
+#define TRIPS_FILE      MOUNT_POINT "/trips.bin"
+#define MAINT_FILE      MOUNT_POINT "/maint.bin"
+#define SYNC_FILE       MOUNT_POINT "/sync.bin"
+#define CHECKPOINT_FILE MOUNT_POINT "/checkpoint.bin"
+
+/* Cada cuanto se guarda a flash el progreso del viaje en curso, para no
+ * perderlo entero si se corta la energia a mitad de un viaje largo (pedido
+ * real, ver README: "un viaje en curso vive solo en RAM hasta que termina").
+ * 60s, no menos: esto escribe a la MISMA particion FAT+wear-levelling que
+ * trips.bin/maint.bin mientras se maneja, asi que el intervalo es un
+ * compromiso entre "cuanto se puede llegar a perder" y desgaste de flash --
+ * en un viaje de 1h son ~60 escrituras, no miles. */
+#define CHECKPOINT_INTERVAL_US (60LL * 1000000)
+
+/* Espejo de los campos de trip_record_t que hacen falta para reconstruirlo
+ * despues de un apagado sucio -- no start_time_s (tiempo desde el boot
+ * ANTERIOR, ya no significa nada) ni recorded_at_epoch_s del checkpoint en
+ * si (se guarda el de INICIO del viaje, igual que trip_record_t). */
+typedef struct {
+    uint32_t duration_s;
+    float    distance_km;
+    float    fuel_used_l;
+    float    speed_sum;
+    uint32_t speed_samples;
+    uint16_t max_rpm;
+    int16_t  max_coolant_c;
+    float    min_battery_v;   // valor crudo, puede ser el sentinel (ver BATTERY_NO_READING_SENTINEL)
+    bool     check_engine_seen;
+    uint32_t recorded_at_epoch_s;
+} trip_checkpoint_t;
 
 /* Con el motor en 0 RPM por mas de esto, se da el viaje por terminado. 15min
  * (no 2) porque una parada a cargar combustible + comprar algo facil entra
@@ -143,6 +170,7 @@ static bool     s_in_trip;
 static int64_t  s_trip_start_us;
 static int64_t  s_last_sample_us;   // 0 = todavia no hubo una muestra real para integrar contra
 static int64_t  s_last_rpm_nonzero_us;
+static int64_t  s_last_checkpoint_us;
 static double   s_distance_km_accum;
 static double   s_fuel_l_accum;
 static double   s_speed_sum;
@@ -171,6 +199,7 @@ static void start_trip(int64_t now_us, const vehicle_state_t *state)
     s_in_trip = true;
     s_trip_start_us = now_us;
     s_last_sample_us = 0;
+    s_last_checkpoint_us = now_us;
     s_distance_km_accum = 0;
     s_fuel_l_accum = 0;
     s_speed_sum = 0;
@@ -180,6 +209,75 @@ static void start_trip(int64_t now_us, const vehicle_state_t *state)
     s_min_battery = state->battery_voltage > 0.0f ? state->battery_voltage : BATTERY_NO_READING_SENTINEL;
     s_check_engine_seen = state->check_engine_on;
     ESP_LOGI(TAG, "viaje iniciado");
+}
+
+/* Comun a un viaje cerrado normal (end_trip) y a uno recuperado de un
+ * checkpoint tras un apagado sucio (recover_checkpoint_if_any) -- ambos
+ * terminan igual: append a trips.bin + descontar del odometro/aceite/
+ * filtro. */
+static void save_trip_and_update_maintenance(const trip_record_t *rec, bool recovered)
+{
+    FILE *f = fopen(TRIPS_FILE, "ab");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el viaje (se pierde este viaje)", TRIPS_FILE);
+        return;
+    }
+    size_t written = fwrite(rec, sizeof(*rec), 1, f);
+    fclose(f);
+    if (written != 1) {
+        /* Visto en la practica cuando la particion se queda sin espacio o hay
+         * un error de flash real — mejor loguearlo fuerte que dejar un
+         * registro a medio escribir en silencio (trips.bin se lee despues
+         * por offset fijo, un registro corrupto correria todos los
+         * siguientes). No reintentamos: si fallo por espacio, reintentar no
+         * arregla nada. */
+        ESP_LOGE(TAG, "escritura incompleta del viaje en %s (se pierde este viaje)", TRIPS_FILE);
+        return;
+    }
+    ESP_LOGI(TAG, "viaje %sguardado: %lus, %.1fkm, %.2fL, %uRPM max",
+             recovered ? "recuperado de un corte de energia y " : "",
+             (unsigned long)rec->duration_s, rec->distance_km, rec->fuel_used_l, rec->max_rpm);
+
+    s_maint.odometer_km += rec->distance_km;
+    s_maint.oil_km_remaining -= rec->distance_km;
+    s_maint.filter_km_remaining -= rec->distance_km;
+    save_maintenance();
+}
+
+/* Guarda a flash el progreso acumulado del viaje en curso -- ver
+ * CHECKPOINT_INTERVAL_US arriba para cuando se llama. Sobreescribe el
+ * checkpoint anterior (no acumula historial, solo el ultimo estado
+ * conocido). */
+static void write_checkpoint_locked(int64_t now_us)
+{
+    uint32_t recorded_at_epoch_s = 0;
+    int64_t wall_clock_offset_s;
+    if (state_store_get_wall_clock_offset(&wall_clock_offset_s)) {
+        recorded_at_epoch_s = (uint32_t)(wall_clock_offset_s + s_trip_start_us / 1000000);
+    }
+
+    trip_checkpoint_t cp = {
+        .duration_s     = (uint32_t)((now_us - s_trip_start_us) / 1000000),
+        .distance_km    = (float)s_distance_km_accum,
+        .fuel_used_l    = (float)s_fuel_l_accum,
+        .speed_sum      = (float)s_speed_sum,
+        .speed_samples  = s_speed_samples,
+        .max_rpm        = s_max_rpm,
+        .max_coolant_c  = s_max_coolant,
+        .min_battery_v  = s_min_battery,
+        .check_engine_seen = s_check_engine_seen,
+        .recorded_at_epoch_s = recorded_at_epoch_s,
+    };
+    FILE *f = fopen(CHECKPOINT_FILE, "wb");
+    if (f == NULL) {
+        ESP_LOGW(TAG, "no se pudo abrir %s para guardar el checkpoint del viaje en curso", CHECKPOINT_FILE);
+        return;
+    }
+    size_t written = fwrite(&cp, sizeof(cp), 1, f);
+    fclose(f);
+    if (written != 1) {
+        ESP_LOGW(TAG, "escritura incompleta del checkpoint en %s", CHECKPOINT_FILE);
+    }
 }
 
 static void end_trip(int64_t now_us)
@@ -210,6 +308,7 @@ static void end_trip(int64_t now_us)
         .recorded_at_epoch_s = recorded_at_epoch_s,
     };
     s_in_trip = false;
+    remove(CHECKPOINT_FILE); // el viaje termino limpio, ya no hace falta recuperarlo en el proximo arranque
 
     /* Viajes de menos de 5min no se guardan — mover el auto en el garage,
      * probar el motor, etc, no cuentan como viaje real (pedido del 22 ago). */
@@ -218,30 +317,7 @@ static void end_trip(int64_t now_us)
         return;
     }
 
-    FILE *f = fopen(TRIPS_FILE, "ab");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "no se pudo abrir %s para guardar el viaje (se pierde este viaje)", TRIPS_FILE);
-        return;
-    }
-    size_t written = fwrite(&rec, sizeof(rec), 1, f);
-    fclose(f);
-    if (written != 1) {
-        /* Visto en la practica cuando la particion se queda sin espacio o hay
-         * un error de flash real — mejor loguearlo fuerte que dejar un
-         * registro a medio escribir en silencio (trips.bin se lee despues
-         * por offset fijo, un registro corrupto correria todos los
-         * siguientes). No reintentamos: si fallo por espacio, reintentar no
-         * arregla nada. */
-        ESP_LOGE(TAG, "escritura incompleta del viaje en %s (se pierde este viaje)", TRIPS_FILE);
-        return;
-    }
-    ESP_LOGI(TAG, "viaje guardado: %lus, %.1fkm, %.2fL, %uRPM max",
-             (unsigned long)rec.duration_s, rec.distance_km, rec.fuel_used_l, rec.max_rpm);
-
-    s_maint.odometer_km += rec.distance_km;
-    s_maint.oil_km_remaining -= rec.distance_km;
-    s_maint.filter_km_remaining -= rec.distance_km;
-    save_maintenance();
+    save_trip_and_update_maintenance(&rec, false);
 }
 
 static void on_state_change(const vehicle_state_t *state, void *ctx)
@@ -287,6 +363,11 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     if (state->battery_voltage > 0.0f && state->battery_voltage < s_min_battery) s_min_battery = state->battery_voltage;
     if (state->check_engine_on) s_check_engine_seen = true;
 
+    if ((now - s_last_checkpoint_us) >= CHECKPOINT_INTERVAL_US) {
+        write_checkpoint_locked(now);
+        s_last_checkpoint_us = now;
+    }
+
     if ((now - s_last_rpm_nonzero_us) > (int64_t)TRIP_END_IDLE_TIMEOUT_S * 1000000) {
         end_trip(now);
     }
@@ -320,6 +401,49 @@ static void migrate_trips_file_if_needed(void)
     if (wf != NULL) fclose(wf);
 }
 
+/* Si el ultimo apagado paso a mitad de un viaje (corte de energia, panic,
+ * etc), end_trip() normal nunca corrio y checkpoint.bin quedo en disco --
+ * si hubiera sido un apagado limpio, end_trip() ya lo habria borrado. Es la
+ * señal de que hay un viaje que recuperar: se guarda como si hubiera
+ * terminado en el ultimo checkpoint conocido, perdiendo como maximo los
+ * ~CHECKPOINT_INTERVAL_US segundos previos al corte en vez del viaje
+ * entero. */
+static void recover_checkpoint_if_any(void)
+{
+    FILE *f = fopen(CHECKPOINT_FILE, "rb");
+    if (f == NULL) return; // apagado limpio la ultima vez, nada que recuperar
+
+    trip_checkpoint_t cp;
+    bool ok = fread(&cp, sizeof(cp), 1, f) == 1;
+    fclose(f);
+    remove(CHECKPOINT_FILE); // se use o no para recuperar, no sirve para el proximo arranque
+
+    if (!ok) {
+        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo (corte justo durante esa escritura) -- se descarta", CHECKPOINT_FILE);
+        return;
+    }
+
+    trip_record_t rec = {
+        .start_time_s   = 0, // tiempo desde el boot ANTERIOR, no comparable con esta sesion (ver storage.h)
+        .duration_s     = cp.duration_s,
+        .distance_km    = cp.distance_km,
+        .fuel_used_l    = cp.fuel_used_l,
+        .avg_speed_kmh  = cp.speed_samples > 0 ? (uint16_t)(cp.speed_sum / cp.speed_samples) : 0,
+        .max_rpm        = cp.max_rpm,
+        .max_coolant_c  = cp.max_coolant_c,
+        .min_battery_v  = cp.min_battery_v == BATTERY_NO_READING_SENTINEL ? 0.0f : cp.min_battery_v,
+        .check_engine_seen = cp.check_engine_seen,
+        .recorded_at_epoch_s = cp.recorded_at_epoch_s,
+    };
+
+    if (rec.duration_s < 5 * 60) {
+        ESP_LOGI(TAG, "checkpoint recuperado descartado (%lus, muy corto)", (unsigned long)rec.duration_s);
+        return;
+    }
+
+    save_trip_and_update_maintenance(&rec, true);
+}
+
 esp_err_t storage_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
@@ -341,6 +465,7 @@ esp_err_t storage_init(void)
 
     migrate_trips_file_if_needed();
     load_maintenance();
+    recover_checkpoint_if_any();
     load_sync_state();
     state_store_subscribe(on_state_change, NULL);
 

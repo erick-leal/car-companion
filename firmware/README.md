@@ -313,6 +313,36 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Checkpoint de viaje en curso a flash (24 ago)
+
+Resuelve el punto pendiente documentado a propósito más abajo ("Un viaje en
+curso vive solo en RAM hasta que termina"): hasta ahora, si se cortaba la
+energía a mitad de un viaje largo, se perdía entero — junto con los km que
+debían descontarse de aceite/filtro.
+
+`storage.c` ahora escribe cada `CHECKPOINT_INTERVAL_US` (60s) el progreso
+acumulado del viaje en curso a `/storage/checkpoint.bin` (distancia,
+combustible, RPM máximo, etc. — el mismo contenido que terminaría en
+`trip_record_t`, sobreescribiendo el checkpoint anterior, no un historial).
+Al arrancar, `storage_init()` llama a `recover_checkpoint_if_any()` **antes**
+de suscribirse a `state_store`: si ese archivo existe, es la señal de que el
+apagado anterior fue "sucio" (un apagado limpio pasa por `end_trip()`, que
+lo borra) — se guarda como un viaje más, igual que uno cerrado normal
+(mismo descarte si dura menos de 5min), y se borra el checkpoint. Se pierden
+como máximo los ~60s previos al corte, no el viaje entero.
+
+Se factorizó `save_trip_and_update_maintenance()` (antes al final de
+`end_trip()`) para que tanto un cierre normal como uno recuperado
+actualicen el odómetro/aceite/filtro de la misma forma, sin duplicar la
+lógica.
+
+**Trade-off aceptado:** 60s de intervalo, no menos — el checkpoint escribe a
+la misma partición FAT+wear-levelling que `trips.bin`/`maint.bin` mientras
+se maneja; en un viaje de 1h son ~60 escrituras, no miles. Confirmado que
+compila limpio; **falta probar en hardware real** cortando la alimentación
+a mitad de un viaje (no se puede simular sin el auto real dando datos OBD
+por un rato).
+
 ## Token de dispositivo separado del login del usuario (24 ago)
 
 Resuelto el TODO que quedó documentado desde que se armó `connectivity`
@@ -516,11 +546,9 @@ pena revisar todo con esa lente. Arreglado:
 
 **Quedó pendiente, documentado a propósito para no meter una reescritura
 grande sin poder probarla en el auto real:**
-- Un viaje en curso vive solo en RAM hasta que termina — un corte de
-  energía en medio de un viaje largo lo pierde entero (junto con los km que
-  debían descontarse de aceite/filtro). Un checkpoint periódico a flash
-  arreglaría esto, pero es una función nueva de por sí, mejor como su propia
-  sesión.
+- ~~Un viaje en curso vive solo en RAM hasta que termina~~ — resuelto el
+  24 ago con un checkpoint a flash cada 60s (ver sección arriba). **Falta
+  probar en hardware real** cortando la alimentación a mitad de un viaje.
 - El watchdog de comando de `obd_driver` puede, en un caso borde raro (una
   respuesta tardía llegando justo después de que ya se armó el siguiente
   comando), entregarle a un callback datos de un comando anterior.
