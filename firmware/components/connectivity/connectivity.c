@@ -448,12 +448,25 @@ static bool add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int6
     cJSON_AddStringToObject(t, "ended_at", ended);
     cJSON_AddNumberToObject(t, "distance_km", rec->distance_km);
     cJSON_AddNumberToObject(t, "max_rpm", rec->max_rpm);
-    /* avg_consumption y dtc_codes se omiten a proposito: avg_consumption no
-     * tiene unidad definida todavia en el contrato (ver docs/api-contract.md,
-     * TODO agregado el 23 ago) y trip_record_t no guarda los codigos DTC de
-     * cada viaje (solo un bool check_engine_seen) — mandar cualquiera de los
-     * dos ahora seria inventar un dato, mejor omitirlos (son opcionales en
-     * el schema del backend) hasta definirlos bien. */
+
+    /* avg_consumption en L/100km (unidad definida el 24 ago, ver
+     * docs/api-contract.md — el backend ya aceptaba/devolvia el campo sin
+     * cambios, solo faltaba que el firmware lo calculara). Se omite (no se
+     * manda el campo) si distance_km es 0 (division invalida) o si
+     * fuel_used_l es 0: ese ultimo caso no es "consumio cero combustible en
+     * todo el viaje", es que el vehiculo no expone el PID de caudal (0x5E)
+     * y fuel_used_l nunca se acumulo — mismo criterio "0 = sin dato" que ya
+     * usa el resto del codebase para PIDs no soportados. */
+    if (rec->distance_km > 0.0f && rec->fuel_used_l > 0.0f) {
+        double avg_consumption_l_100km = (double)rec->fuel_used_l / (double)rec->distance_km * 100.0;
+        cJSON_AddNumberToObject(t, "avg_consumption", avg_consumption_l_100km);
+    }
+
+    /* dtc_codes se omite a proposito: trip_record_t no guarda los codigos
+     * DTC de cada viaje individual (solo un bool check_engine_seen) —
+     * mandarlo ahora seria inventar un dato. Habria que decidir si vale la
+     * pena guardar los codigos reales por viaje en storage para esto (ver
+     * docs/api-contract.md). */
 
     cJSON_AddItemToArray(trips_array, t);
     return true;

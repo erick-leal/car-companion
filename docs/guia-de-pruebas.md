@@ -258,6 +258,13 @@ bugs reales (RAM/TLS + un bug de fechas), todos arreglados — ver
   que se sincroniza (ej. se queda sin batería, se reflashea), ese viaje
   puntual puede quedar con una fecha aproximada — no es un bug nuevo, es
   una limitación conocida de no tener reloj propio con batería en el M5.
+- **`avg_consumption` (nuevo, 24 ago)**: al consultar el historial con
+  `curl` (ver más abajo), cada viaje debería traer un `avg_consumption` en
+  **L/100km** (litros cada 100km) — comparar contra lo que sabés que gasta
+  el Maxus normalmente, para confirmar que el número tiene sentido. Si un
+  viaje no trae ese campo (queda ausente, no en `0`), es porque el
+  adaptador no expuso el dato de caudal de combustible en ese viaje — no es
+  un bug.
 - Para confirmar del todo que llegó al backend, se puede pedir el historial
   con `curl` (con tu propio login, no lo hagas pegándome tu contraseña a
   mí):

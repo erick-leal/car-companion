@@ -313,6 +313,27 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## `avg_consumption` definido y calculado (24 ago)
+
+Quedaba pendiente desde que se armó `connectivity` (ver
+`docs/api-contract.md`): el campo `avg_consumption` del payload de sync
+existía en el schema del backend pero sin unidad definida, así que el
+firmware lo omitía. Definido como **L/100km** (estándar en Chile, más
+intuitivo que km/L para un diesel: menor número = más eficiente). El
+backend no necesitó ningún cambio — `POST`/`GET /sync/trips` ya
+insertaban/devolvían la columna `avg_consumption NUMERIC(6,2)` sin asumir
+una unidad, solo faltaba que el firmware la calculara.
+
+`connectivity.c` ahora la computa por viaje como `fuel_used_l / distance_km
+* 100`, y **omite el campo** (no lo manda) si `distance_km == 0` o si
+`fuel_used_l == 0` — este último caso no es "el viaje gastó cero
+combustible", es que el vehículo no expone el PID de caudal (0x5E) y
+`fuel_used_l` nunca se acumuló durante el viaje (mismo criterio "0 = sin
+dato" que ya usa el resto del codebase para PIDs no soportados). Confirmado
+en hardware que compila y arranca limpio — **falta confirmar con un viaje
+real** que el número calculado tenga sentido (comparar contra el consumo
+real conocido del Maxus).
+
 ## Consumo de batería (24 ago)
 
 Erick midió ~5% de batería del M5 en menos de 10 minutos, prendido pero sin
