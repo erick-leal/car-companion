@@ -17,8 +17,26 @@
  *
  * Limitacion real: sin WiFi/NTP no hay hora de pared confiable, asi que
  * start_time_s es tiempo desde el arranque del ESP32 (esp_timer), no una
- * fecha/hora real. Cuando `connectivity` sincronice con el backend, ahi se
- * puede resolver la fecha real (el backend sabe cuando llego cada sync).
+ * fecha/hora real.
+ *
+ * `recorded_at_epoch_s` (agregado 23-24 ago, junto con `connectivity`)
+ * guarda ademas la hora real UNIX aproximada al momento de cerrar el viaje,
+ * si `connectivity` ya habia sincronizado la hora por SNTP en este arranque
+ * (0 si no — viajes de antes de esta funcionalidad, o cerrados antes de la
+ * primera sincronizacion SNTP del arranque). Es necesario tenerlo por
+ * viaje, no alcanza con calcularlo al sincronizar: el offset de hora real
+ * solo es valido para el arranque en el que se calculo, y un viaje puede
+ * sincronizarse recien en un arranque posterior al que se grabo (bug real
+ * encontrado el 23-24 ago: dos viajes de dias distintos quedaron con la
+ * misma fecha en el backend porque se reconstruian con el offset del
+ * arranque en que se sincronizaron, no el que se grabaron).
+ *
+ * BUG DE MIGRACION CONOCIDO: agregar este campo cambio el tamaño del
+ * struct, asi que los registros ya guardados en el formato viejo de
+ * trips.bin no calzan mas — storage_init() lo detecta (tamaño de archivo no
+ * multiplo de sizeof(trip_record_t)) y reinicia trips.bin con un ESP_LOGW,
+ * perdiendo el historial viejo. Aceptado a proposito: a esta altura solo
+ * habia 2 viajes de prueba.
  */
 
 typedef struct {
@@ -30,7 +48,8 @@ typedef struct {
     uint16_t max_rpm;
     int16_t  max_coolant_c;
     float    min_battery_v;
-    bool     check_engine_seen; // si el CEL se prendio en algun momento del viaje
+    bool     check_engine_seen;    // si el CEL se prendio en algun momento del viaje
+    uint32_t recorded_at_epoch_s;  // hora real UNIX aprox. al cerrar el viaje; 0 = desconocida (ver nota arriba)
 } trip_record_t;
 
 /**

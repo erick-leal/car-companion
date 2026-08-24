@@ -66,6 +66,14 @@ static void on_sntp_time_synced(struct timeval *tv)
     char buf[32];
     format_iso8601(tv->tv_sec, buf, sizeof(buf));
     ESP_LOGI(TAG, "hora sincronizada por SNTP: %s", buf);
+
+    /* Publicado para que storage pueda guardar una hora real aproximada
+     * junto a cada viaje que cierre de aca en adelante en este arranque
+     * (ver nota grande en state_store.h) — sin esto, un viaje grabado en
+     * un arranque anterior y recien sincronizado despues quedaba con la
+     * fecha del arranque actual, no la real (bug real, 23-24 ago). */
+    int64_t offset_s = (int64_t)tv->tv_sec - (esp_timer_get_time() / 1000000);
+    state_store_set_wall_clock_offset(offset_s);
 }
 
 /* --- WiFi + SNTP --- */
@@ -309,9 +317,23 @@ static void add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int6
 {
     cJSON *t = cJSON_CreateObject();
 
+    /* Preferimos recorded_at_epoch_s (hora real guardada por storage cuando
+     * cerro el viaje, ver storage.h) por sobre reconstruirla con el
+     * boot_epoch del arranque ACTUAL — ese boot_epoch solo es correcto si
+     * el viaje paso en este mismo arranque; para un viaje de un arranque
+     * anterior que recien se sincroniza ahora, da una fecha incorrecta
+     * (bug real, 23-24 ago: dos viajes de dias distintos quedaron con la
+     * misma fecha). recorded_at_epoch_s==0 solo pasa en viajes guardados
+     * antes de esta funcionalidad, o si SNTP nunca habia sincronizado
+     * cuando ese viaje en particular cerro — ahi no queda otra que la
+     * aproximacion vieja. */
+    int64_t start_epoch_s = rec->recorded_at_epoch_s != 0
+        ? (int64_t)rec->recorded_at_epoch_s
+        : boot_epoch_s + rec->start_time_s;
+
     char started[32], ended[32];
-    format_iso8601((time_t)(boot_epoch_s + rec->start_time_s), started, sizeof(started));
-    format_iso8601((time_t)(boot_epoch_s + rec->start_time_s + rec->duration_s), ended, sizeof(ended));
+    format_iso8601((time_t)start_epoch_s, started, sizeof(started));
+    format_iso8601((time_t)(start_epoch_s + rec->duration_s), ended, sizeof(ended));
     cJSON_AddStringToObject(t, "started_at", started);
     cJSON_AddStringToObject(t, "ended_at", ended);
     cJSON_AddNumberToObject(t, "distance_km", rec->distance_km);

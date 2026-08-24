@@ -202,12 +202,12 @@ Menú → **Mantenimiento**.
 No es una pantalla — pasa solo en segundo plano. Requiere haber completado
 `connectivity_secrets.h` (ver paso 0 de "Antes de salir").
 
-**Ya probado en hardware real con WiFi de casa (23 ago): WiFi conecta, la
-hora sincroniza por SNTP, y el handshake HTTPS contra el backend funciona**
-(costó tres bugs reales de RAM/TLS, ver `firmware/README.md` — ya
-arreglados). Lo único pendiente al momento de escribir esto era una
-contraseña de menos de 8 caracteres en `connectivity_secrets.h` — revisarla
-si el log muestra ese error.
+**Confirmado funcionando de punta a punta en hardware real el 24 ago**:
+WiFi conecta, la hora sincroniza por SNTP, login + registro + sync de
+viajes funcionan — verificado consultando el backend directo con `curl`,
+los datos coincidían con lo que mostraba la pantalla de Viaje. Costó cuatro
+bugs reales (RAM/TLS + un bug de fechas), todos arreglados — ver
+`firmware/README.md` para el detalle.
 
 - **Mientras manejás** (sin WiFi de casa cerca): no debería pasar nada
   visible, ni logs de error repetidos por WiFi — eso es lo esperado, el
@@ -216,16 +216,22 @@ si el log muestra ese error.
   log serial (ver sección 8 para cómo capturarlo) buscar:
   - `connectivity: WiFi conectado (IP obtenida), sincronizando hora por SNTP...`
   - `connectivity: hora sincronizada por SNTP: <fecha>` — confirma que el
-    reloj del dispositivo es correcto (necesario para el handshake TLS).
+    reloj del dispositivo es correcto (necesario para el handshake TLS y
+    para que la fecha de cada viaje quede bien en el backend).
   - `connectivity: sync: N viaje(s) sincronizados con el backend` — esto
     confirma que el login, el registro del dispositivo, y el POST de
-    viajes funcionaron de punta a punta. **Esto es lo que falta confirmar
-    con la contraseña ya corregida.**
+    viajes funcionaron de punta a punta.
   - Si en cambio aparece `connectivity: sync: no se pudo hacer login...`
     revisar el mensaje: si dice "la contraseña debe tener al menos 8
     caracteres", corregir `BACKEND_PASSWORD` en `connectivity_secrets.h`;
     si dice "credenciales inválidas", revisar `BACKEND_EMAIL`/
     `BACKEND_PASSWORD` contra tu cuenta real.
+- **Ojo con las fechas**: un viaje que se graba y se sincroniza en el mismo
+  arranque del M5 (lo normal de acá en adelante) va a tener la fecha real
+  correcta en el backend. Si el M5 se reinicia entre que el viaje pasa y
+  que se sincroniza (ej. se queda sin batería, se reflashea), ese viaje
+  puntual puede quedar con una fecha aproximada — no es un bug nuevo, es
+  una limitación conocida de no tener reloj propio con batería en el M5.
 - Para confirmar del todo que llegó al backend, se puede pedir el historial
   con `curl` (con tu propio login, no lo hagas pegándome tu contraseña a
   mí):
@@ -308,8 +314,7 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
       típicamente se resetea por la baja de tensión), el dashboard pasa por
       "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado
       mostrando datos viejos como si siguieran en vivo.
-- [ ] Sync con el backend: corregir la contraseña en
-      `connectivity_secrets.h` (debe tener 8+ caracteres) y confirmar en el
-      log que aparece "sync: N viaje(s) sincronizados" — WiFi, SNTP y el
-      handshake HTTPS ya se confirmaron funcionando en hardware real (23
-      ago), solo falta este último paso con la contraseña corregida.
+- [x] Sync con el backend: confirmado funcionando de punta a punta en
+      hardware real el 24 ago (login, registro, sync de viajes, y fechas
+      correctas). Falta seguir viendo que cada viaje real nuevo se
+      sincronice bien de acá en adelante, en manejadas normales.

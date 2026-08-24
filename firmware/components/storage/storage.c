@@ -150,6 +150,16 @@ static void start_trip(int64_t now_us, const vehicle_state_t *state)
 
 static void end_trip(int64_t now_us)
 {
+    /* Hora real aproximada de inicio del viaje, si connectivity ya
+     * sincronizo por SNTP en este arranque (ver nota grande en
+     * storage.h/trip_record_t) — 0 si no, se resuelve como mejor se pueda
+     * al sincronizar. */
+    uint32_t recorded_at_epoch_s = 0;
+    int64_t wall_clock_offset_s;
+    if (state_store_get_wall_clock_offset(&wall_clock_offset_s)) {
+        recorded_at_epoch_s = (uint32_t)(wall_clock_offset_s + s_trip_start_us / 1000000);
+    }
+
     trip_record_t rec = {
         .start_time_s   = (uint32_t)(s_trip_start_us / 1000000),
         .duration_s     = (uint32_t)((now_us - s_trip_start_us) / 1000000),
@@ -163,6 +173,7 @@ static void end_trip(int64_t now_us)
          * struct (ver storage.h/trip_record_t), no un valor real medido. */
         .min_battery_v  = s_min_battery == BATTERY_NO_READING_SENTINEL ? 0.0f : s_min_battery,
         .check_engine_seen = s_check_engine_seen,
+        .recorded_at_epoch_s = recorded_at_epoch_s,
     };
     s_in_trip = false;
 
@@ -242,6 +253,33 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     }
 }
 
+/* trip_record_t gano un campo nuevo el 23-24 ago (recorded_at_epoch_s), lo
+ * que cambio su tamaño en bytes — un trips.bin grabado con el struct viejo
+ * ya no calza en offsets fijos de index*sizeof(trip_record_t). Se detecta
+ * por el tamaño del archivo no siendo multiplo del tamaño ACTUAL del
+ * struct, y se reinicia entero: no hay forma segura de reinterpretar bytes
+ * en un formato que ya no existe en el codigo. Perdida de datos aceptada a
+ * proposito (solo habia 2 viajes de prueba en ese momento). */
+static void migrate_trips_file_if_needed(void)
+{
+    FILE *f = fopen(TRIPS_FILE, "rb");
+    if (f == NULL) return; // no existe todavia, nada que migrar
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fclose(f);
+
+    if (size < 0 || (size % (long)sizeof(trip_record_t)) == 0) {
+        return; // formato actual, o archivo vacio/corrupto de otra forma (no es este caso)
+    }
+
+    ESP_LOGW(TAG, "%s tiene un tamaño (%ld bytes) que no calza con el formato actual de trip_record_t "
+                  "(%u bytes) -- probablemente quedo del formato viejo antes de recorded_at_epoch_s. "
+                  "Reiniciando el historial de viajes (no se puede leer con seguridad).",
+             TRIPS_FILE, size, (unsigned)sizeof(trip_record_t));
+    FILE *wf = fopen(TRIPS_FILE, "wb"); // "wb" trunca a 0 bytes
+    if (wf != NULL) fclose(wf);
+}
+
 esp_err_t storage_init(void)
 {
     const esp_vfs_fat_mount_config_t mount_config = {
@@ -255,6 +293,7 @@ esp_err_t storage_init(void)
         return err;
     }
 
+    migrate_trips_file_if_needed();
     load_maintenance();
     load_sync_state();
     state_store_subscribe(on_state_change, NULL);

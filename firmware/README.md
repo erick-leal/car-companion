@@ -376,8 +376,41 @@ y la causa de fondo real: fragmentación de RAM interna, resuelta moviendo
 mbedTLS a PSRAM). **Confirmado en hardware real: WiFi conecta, SNTP
 sincroniza, y el login HTTPS contra el backend llega hasta la respuesta de
 la aplicación** (400 por una contraseña de menos de 8 caracteres en
-`connectivity_secrets.h` — dato de Erick, no un bug). Login/registro/sync
-exitoso de punta a punta queda para cuando corrija esa contraseña.
+`connectivity_secrets.h` — dato de Erick, no un bug). **Confirmado el
+24 ago: con la contraseña corregida, login + registro + sync de los 2
+viajes de prueba funcionó de punta a punta** — verificado consultando
+`GET /sync/trips` directo al backend con `curl`, los datos (distancia,
+RPM máximo) coinciden exactamente con lo que mostraba la pantalla de Viaje.
+
+**Bug real encontrado en esa misma verificación**: los dos viajes
+sincronizados aparecían con la **misma fecha** en el backend, aunque eran
+viajes distintos. Causa: `connectivity` reconstruía `started_at`/`ended_at`
+sumando `start_time_s` (segundos desde el boot) al offset de hora real
+**del arranque en que se sincroniza**, no del arranque en que el viaje
+realmente pasó — válido solo si sync y viaje ocurren en el mismo arranque.
+Como estos dos viajes eran de antes de que existiera `connectivity` y
+recién se sincronizaron ahora (arranque distinto), la fecha reconstruida
+era una aproximación incorrecta para ambos.
+
+Arreglado agregando `trip_record_t.recorded_at_epoch_s` (hora real UNIX
+aproximada, guardada por `storage` al cerrar el viaje si `connectivity` ya
+había sincronizado por SNTP en ese arranque — 0 si no). Para pasarle esa
+hora a `storage` sin crear una dependencia nueva ida y vuelta entre
+componentes, se agregó `state_store_set_wall_clock_offset()` /
+`state_store_get_wall_clock_offset()`: un valor de "reloj de pared" en
+`state_store`, separado de `vehicle_state_t` (no es estado del vehículo, no
+dispara `notify_subscribers`), que `connectivity` fija apenas SNTP
+sincroniza y `storage` lee al cerrar cada viaje. `connectivity.c` ahora
+prefiere `recorded_at_epoch_s` sobre la reconstrucción vieja cuando está
+disponible.
+
+**Efecto secundario aceptado**: el campo nuevo cambió el tamaño de
+`trip_record_t`, así que `trips.bin` en el formato viejo ya no calza en
+offsets fijos — `storage_init()` lo detecta (tamaño de archivo no múltiplo
+del tamaño actual del struct) y reinicia el archivo con un `ESP_LOGW`. Los
+2 viajes de prueba en el M5 se perdieron localmente con este cambio (ya
+estaban sincronizados en el backend de todos modos, así que el dato real no
+se perdió). Confirmado en hardware: arranca limpio después de la migración.
 
 **Botón manual de sync (23 ago)**: la pantalla de Viaje suma un botón solo
 con el ícono de sincronizar (arriba a la derecha, `LV_SYMBOL_REFRESH`, sin
@@ -492,13 +525,12 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
 9. PIDs propietarios del Maxus (boost real de turbo, EGT) — no están en el
    bitmask estándar, requieren ingeniería inversa. Ver `docs/pid-mapping.md`.
 10. ~~`connectivity`: WiFi + sync de viajes al backend~~ — hecho el 23 ago,
-   **probado end-to-end en hardware real el mismo día** con WiFi de casa
-   real: conecta, sincroniza hora por SNTP, hace login HTTPS contra el
-   backend. El único paso que falta es que Erick complete
-   `connectivity_secrets.h` con una contraseña de al menos 8 caracteres (el
-   backend la rechaza con 400, error esperado — no es un bug). Falta
-   también decidir el token de dispositivo separado (ver
-   `docs/api-contract.md`) y definir la unidad de `avg_consumption`.
+   **confirmado funcionando de punta a punta en hardware real el 24 ago**:
+   WiFi conecta, SNTP sincroniza, login + registro + sync de viajes
+   funcionan, verificado consultando el backend directo con `curl` (los
+   datos coinciden con lo que mostraba la pantalla de Viaje). Falta todavía
+   decidir el token de dispositivo separado (ver `docs/api-contract.md`) y
+   definir la unidad de `avg_consumption`.
 
    **Tres bugs reales más, encontrados recién con WiFi de verdad** (los del
    22-23 ago con credenciales de ejemplo solo cubrían "WiFi nunca conecta"
@@ -523,6 +555,16 @@ enchufa, flash llena o corrupta. Encontrado y arreglado:
      las allocaciones de mbedTLS a PSRAM (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`,
      4MB libres sin competencia) en vez de seguir ajustando tamaños de
      buffer a ciegas.
+   - **Bug real #4, encontrado verificando el sync con `curl` (24 ago)**:
+     dos viajes distintos aparecían con la misma fecha en el backend —
+     `connectivity` reconstruía la hora sumando el offset de hora real
+     **del arranque en que sincroniza**, no del arranque en que el viaje
+     pasó (solo correcto si ambos coinciden). Arreglado con
+     `trip_record_t.recorded_at_epoch_s` (hora real guardada por `storage`
+     al cerrar cada viaje, vía `state_store_set/get_wall_clock_offset()`)
+     — ver sección dedicada más arriba. Efecto secundario: cambió el
+     tamaño de `trip_record_t`, así que se perdió el historial local viejo
+     (ya estaba sincronizado en el backend, dato real a salvo).
 10. Rotación automática 180° por acelerómetro — **se probó y se sacó (20
    ago)**. El Core2 trae un MPU6886 (acelerómetro+giroscopio, confirmado en
    la fuente de M5Stack) en el mismo bus I2C que el AXP192/táctil, y se

@@ -374,3 +374,26 @@ bool state_store_consume_sync_request(void)
     unlock();
     return was_requested;
 }
+
+static bool    s_wall_clock_valid;
+static int64_t s_wall_clock_offset_s;
+
+esp_err_t state_store_set_wall_clock_offset(int64_t offset_s)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_wall_clock_offset_s = offset_s;
+    s_wall_clock_valid = true;
+    unlock();
+    // sin notify_subscribers a proposito: no es estado del vehiculo, nadie redibuja por esto
+    return ESP_OK;
+}
+
+bool state_store_get_wall_clock_offset(int64_t *offset_s)
+{
+    if (lock() != ESP_OK) return false;
+    bool valid = s_wall_clock_valid;
+    if (valid) *offset_s = s_wall_clock_offset_s;
+    unlock();
+    return valid;
+}

@@ -93,6 +93,27 @@ esp_err_t state_store_request_sync(void);
 bool state_store_consume_sync_request(void);
 
 /**
+ * Reloj de pared aproximado del dispositivo — NO es "estado del vehiculo"
+ * (no toca data_valid ni dispara notify_subscribers, ui no necesita
+ * redibujar por esto), asi que vive aparte de vehicle_state_t, mismo
+ * criterio que los buzones de arriba.
+ *
+ * `connectivity` la fija una vez que SNTP sincroniza (ver
+ * on_sntp_time_synced en connectivity.c): offset_s = hora real UNIX -
+ * esp_timer_get_time()/1e6, constante durante todo el arranque una vez
+ * fijada. `storage` la lee al cerrar un viaje para guardar una hora real
+ * aproximada junto al viaje (ver trip_record_t.recorded_at_epoch_s en
+ * storage.h) — sin esto, `connectivity` solo podia reconstruir la hora de
+ * un viaje asumiendo que paso en el arranque ACTUAL, lo cual es incorrecto
+ * para viajes de un arranque anterior que recien se sincronizan despues
+ * (bug real encontrado el 23-24 ago: dos viajes de dias distintos quedaron
+ * con la misma fecha en el backend).
+ */
+esp_err_t state_store_set_wall_clock_offset(int64_t offset_s);
+/** true si ya se fijo al menos una vez en este arranque (deja *offset_s sin tocar si no). */
+bool state_store_get_wall_clock_offset(int64_t *offset_s);
+
+/**
  * Marca data_valid=false (el adaptador OBD se desconecto — reason real de
  * manejo: el Vgate se resetea con la caida de tension al arrancar el motor,
  * o queda fuera de rango momentaneamente). Deja el resto de los campos
