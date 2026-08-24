@@ -229,8 +229,10 @@ function renderTrip(trip) {
   const card = document.createElement("div");
   card.className = "trip-card";
 
-  const distance = trip.distance_km != null ? trip.distance_km.toFixed(1) + " km" : "—";
-  const consumption = trip.avg_consumption != null ? trip.avg_consumption.toFixed(1) + " L/100km" : "—";
+  /* pg devuelve columnas NUMERIC como string, no number (evita perder
+   * precision) -- Number(...) antes de toFixed(), si no explota. */
+  const distance = trip.distance_km != null ? Number(trip.distance_km).toFixed(1) + " km" : "—";
+  const consumption = trip.avg_consumption != null ? Number(trip.avg_consumption).toFixed(1) + " L/100km" : "—";
   const maxRpm = trip.max_rpm != null ? trip.max_rpm : "—";
 
   card.innerHTML =
