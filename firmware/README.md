@@ -313,6 +313,88 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Auditoria de memoria y casos borde (24 ago)
+
+Repaso completo de todos los componentes buscando fugas de memoria, stacks
+justos, condiciones de carrera entre tareas, y fallas silenciosas — con el
+sistema completo (BLE+WiFi+LVGL+TLS) ya andando, la RAM interna quedó
+demostradamente justa (ver la sección de TLS más abajo), así que valía la
+pena revisar todo con esa lente. Arreglado:
+
+- **Condicion de carrera real en `storage`**: `on_state_change` corre tanto
+  desde la tarea del host de NimBLE (los setters normales de PIDs) como
+  desde la tarea de `pid_engine` (via `state_store_set_disconnected()`), sin
+  ningun mutex — dos llamadas casi simultaneas podian guardar el mismo viaje
+  dos veces, o pisarse escribiendo `maint.bin`/`trips.bin` al mismo tiempo
+  (FATFS no tiene lock propio acá, `CONFIG_FATFS_FS_LOCK=0`). Agregado un
+  mutex propio de `storage` que protege el viaje en curso, `s_maint`, y el
+  cursor de sync — todas las funciones públicas y `on_state_change` lo
+  toman.
+- **Stack de la tarea de NimBLE demasiado justo**: los callbacks de notify
+  bajan por toda la cadena `obd_driver → pid_engine → state_store →
+  storage (puede escribir a FAT) + ui (toma el mutex de LVGL)`, todo en el
+  stack de *esa* tarea — 4KB (default) era poco margen para eso. Subido a
+  8KB. Se agregó además `uxTaskGetStackHighWaterMark()` al log de salud
+  (`pid_engine`, cada 5min) para las tareas de `pid_engine` y de NimBLE —
+  antes no había ningún dato medido, solo la estimación de esta auditoría.
+- **El init del ELM327 podía quedar colgado para siempre**: si el ELM327
+  nunca respondía al primer paso (`ATZ`) — el código ya admitía que no
+  espera confirmación del write del CCCD antes de mandarlo — no había
+  reintento: `obd_driver_is_connected()` quedaba en `false` para siempre
+  aunque el enlace BLE siguiera vivo. Agregado reintento (hasta 3 veces) y,
+  si se agotan, `ble_gap_terminate()` para forzar una reconexión completa en
+  vez de quedar colgado.
+- **Los flags "Leyendo.../Borrando..." de Fallas podían quedar pegados**: si
+  el envío del comando fallaba, o si se enviaba bien pero la respuesta nunca
+  llegaba (el timeout de 3s de `obd_driver` se resuelve en silencio), nada
+  apagaba `dtc_read_in_progress`/`dtc_clear_in_progress` — la pantalla
+  quedaba mostrando "Leyendo..." indefinidamente. Arreglado en los dos
+  casos: se revierte el flag si el envío falla, y `poll_task` tiene un
+  watchdog de 5s que lo fuerza a apagarse si nunca llegó respuesta.
+- **Códigos de retorno de NimBLE ignorados**: `ble_gap_connect`,
+  `ble_gattc_write_no_rsp_flat`, `ble_gattc_disc_svc_by_uuid` y
+  `ble_gattc_disc_all_chrs` no chequeaban su `rc` — una falla ahí dejaba al
+  dispositivo sin OBD hasta un reboot, sin ningún log que lo explicara.
+  Todos ahora loguean y, donde corresponde (`ble_gap_connect`), reintentan
+  el escaneo.
+- **`connectivity`: token JWT truncado en silencio, y viajes marcados como
+  sincronizados sin haberse mandado**: si la respuesta HTTP no entraba en el
+  buffer local, se cortaba sin avisar (un token truncado da un 401 sin
+  ninguna pista de por qué); y si `cJSON_CreateObject()` fallaba por falta
+  de memoria armando el JSON de un viaje, ese viaje igual se contaba como
+  sincronizado y `storage_mark_trips_synced` lo marcaba como tal — pérdida
+  de datos definitiva y silenciosa. Ambos casos ahora loguean y, en el
+  segundo, se corta el batch en el primer viaje que falla (mantiene el
+  cursor de sync contiguo).
+- **Reconexión WiFi sin backoff**: cada desconexión disparaba un
+  `esp_wifi_connect()` inmediato — fuera del alcance del WiFi de casa (la
+  mayor parte del tiempo real de uso), eso es un bucle intento-fallo
+  continuo gastando CPU/batería en la misma RAM interna que ya está
+  compartida con NimBLE/LVGL/mbedTLS. Agregado backoff exponencial simple
+  (1s → 2s → 4s... tope 30s, reseteado al reconectar).
+- **`ui`: patrón `off += snprintf(...)` sin acotar**: en las pantallas de
+  Fallas y Diagnóstico, si algún campo alguna vez creciera más de lo
+  esperado, `off` podía superar el tamaño del buffer y la siguiente llamada
+  pasaría un tamaño negativo (interpretado como un `size_t` gigante) —
+  escritura fuera del buffer. No explotable con los tamaños actuales, pero
+  sí una trampa para el próximo campo agregado. Reemplazado por un helper
+  `buf_append()` que nunca deja que `off` supere el tamaño del buffer.
+
+**Quedó pendiente, documentado a propósito para no meter una reescritura
+grande sin poder probarla en el auto real:**
+- Un viaje en curso vive solo en RAM hasta que termina — un corte de
+  energía en medio de un viaje largo lo pierde entero (junto con los km que
+  debían descontarse de aceite/filtro). Un checkpoint periódico a flash
+  arreglaría esto, pero es una función nueva de por sí, mejor como su propia
+  sesión.
+- El watchdog de comando de `obd_driver` puede, en un caso borde raro (una
+  respuesta tardía llegando justo después de que ya se armó el siguiente
+  comando), entregarle a un callback datos de un comando anterior.
+  Ya se mitigó la parte más común (bytes viejos pegándose al inicio de la
+  respuesta siguiente, con un reset de buffer al armar cada comando), pero
+  una correlación completa por número de secuencia es un cambio más
+  invasivo al protocolo interno — se dejó afuera de esta pasada.
+
 ## `connectivity`: sync de viajes al backend (23 ago)
 
 Implementado el componente `connectivity` (hasta ahora solo un stub sin

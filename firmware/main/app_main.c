@@ -31,22 +31,6 @@
 
 static const char *TAG = "car_companion";
 
-/* Suscriptor de ejemplo: mientras no exista `ui` real, logueamos por UART
- * cada vez que cambia el estado. Esto es lo que vas a mirar en el monitor
- * serie (`idf.py monitor`) mientras manejas el T60 para el primer test real. */
-static void log_state_change(const vehicle_state_t *state, void *ctx)
-{
-    (void)ctx;
-    ESP_LOGI(TAG, "RPM=%u  vel=%ukm/h  coolant=%dC  bat=%.1fV  carga=%u%%  boost=%dkPa (baro=%ukPa)  "
-                  "acel=%u%%  rail=%ukPa  combustible=%.1fL/h  ambiente=%dC  CEL=%s",
-             state->rpm, state->speed_kmh, state->coolant_temp_c,
-             state->battery_voltage, state->engine_load_pct,
-             state->boost_pressure_kpa, state->barometric_pressure_kpa,
-             state->throttle_pct, (unsigned)state->fuel_rail_pressure_kpa,
-             state->fuel_rate_lph, state->ambient_air_temp_c,
-             state->check_engine_on ? "ON" : "off");
-}
-
 void app_main(void)
 {
     ESP_LOGI(TAG, "Car Companion — arrancando");
@@ -68,7 +52,6 @@ void app_main(void)
                  esp_err_to_name(connectivity_err));
     }
 
-    state_store_subscribe(log_state_change, NULL);
     ui_show_main_screen();
 
     ESP_ERROR_CHECK(pid_engine_start_polling());

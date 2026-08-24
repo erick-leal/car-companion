@@ -78,20 +78,43 @@ static void on_sntp_time_synced(struct timeval *tv)
 
 /* --- WiFi + SNTP --- */
 
+/* Backoff de reconexion (encontrado en auditoria, 24 ago): antes de esto,
+ * cada WIFI_EVENT_STA_DISCONNECTED disparaba un esp_wifi_connect()
+ * inmediato. Fuera del alcance del WiFi de casa (el 95% del tiempo de uso
+ * real, manejando), eso es un bucle intento-fallo continuo que gasta CPU y
+ * bateria, y mantiene al driver de WiFi trabajando en la misma RAM interna
+ * que ya se pelea con NimBLE/LVGL/mbedTLS. Backoff exponencial simple
+ * (1s, 2s, 4s... tope 30s), via un esp_timer para no bloquear la tarea del
+ * event loop con un delay (esp_wifi_connect() se llama desde ahi mismo). */
+#define RECONNECT_BACKOFF_MAX_S 30
+static esp_timer_handle_t s_reconnect_timer;
+static int s_reconnect_backoff_s = 1;
+
+static void reconnect_timer_cb(void *arg)
+{
+    esp_wifi_connect();
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     (void)arg;
     (void)event_data;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        esp_wifi_connect(); // primer intento, sin backoff
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_wifi_connected) {
             ESP_LOGW(TAG, "WiFi desconectado (normal manejando, fuera de rango de casa), reintentando...");
         }
         s_wifi_connected = false;
-        esp_wifi_connect(); // reintento simple sin backoff: reintentar gratis no le hace mal a nadie, y el WiFi de casa puede aparecer en cualquier momento
+        ESP_LOGI(TAG, "WiFi: reintentando conectar en %ds", s_reconnect_backoff_s);
+        esp_timer_start_once(s_reconnect_timer, (uint64_t)s_reconnect_backoff_s * 1000000ULL);
+        s_reconnect_backoff_s *= 2;
+        if (s_reconnect_backoff_s > RECONNECT_BACKOFF_MAX_S) {
+            s_reconnect_backoff_s = RECONNECT_BACKOFF_MAX_S;
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_wifi_connected = true;
+        s_reconnect_backoff_s = 1; // conexion lograda, el proximo corte vuelve a empezar desde 1s
         ESP_LOGI(TAG, "WiFi conectado (IP obtenida), sincronizando hora por SNTP...");
     }
 }
@@ -120,6 +143,16 @@ static esp_err_t wifi_and_sntp_start(void)
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_flash_init fallo: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const esp_timer_create_args_t reconnect_timer_args = {
+        .callback = &reconnect_timer_cb,
+        .name = "wifi_reconnect",
+    };
+    err = esp_timer_create(&reconnect_timer_args, &s_reconnect_timer);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_timer_create (reconexion WiFi) fallo: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -189,6 +222,7 @@ typedef struct {
     char   *buf;
     size_t  buf_size;
     size_t  written;
+    bool    truncated; // ver nota en http_post_json — encontrado en auditoria, 24 ago
 } http_resp_ctx_t;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -201,6 +235,9 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
     size_t space = ctx->buf_size - ctx->written - 1; // -1 para el '\0' final
     size_t to_copy = (size_t)evt->data_len < space ? (size_t)evt->data_len : space;
+    if ((size_t)evt->data_len > space) {
+        ctx->truncated = true; // se descarta el resto en silencio, ver log en http_post_json
+    }
     if (to_copy > 0) {
         memcpy(ctx->buf + ctx->written, evt->data, to_copy);
         ctx->written += to_copy;
@@ -249,6 +286,18 @@ static esp_err_t http_post_json(const char *path, const char *bearer_token, cons
         ESP_LOGW(TAG, "HTTP POST %s fallo (transporte): %s", path, esp_err_to_name(err));
         return err;
     }
+    if (ctx.truncated) {
+        /* Bug real encontrado en auditoria (24 ago): antes de este chequeo,
+         * una respuesta mas larga que el buffer local se cortaba en
+         * silencio -- el error resultante (ej. cJSON_Parse fallando en
+         * http_login) apuntaba al backend ("la respuesta no es JSON
+         * valido") cuando el problema real es que ESTE buffer se quedo
+         * corto. Pasa si el backend agrega un campo al payload sin que el
+         * firmware se entere. */
+        ESP_LOGW(TAG, "la respuesta de %s no entra en el buffer local de %u bytes (se trunco) -- "
+                      "si algo falla parseandola despues de este log, el buffer es sospechoso #1",
+                 path, (unsigned)resp_buf_size);
+    }
     if (status < 200 || status >= 300) {
         ESP_LOGW(TAG, "HTTP POST %s devolvio status %d: %s", path, status,
                  (resp_buf != NULL && resp_buf[0] != '\0') ? resp_buf : "(sin cuerpo)");
@@ -284,6 +333,16 @@ static esp_err_t http_login(char *token_out, size_t token_out_size)
         cJSON_Delete(parsed);
         return ESP_FAIL;
     }
+    size_t token_len = strlen(token_item->valuestring);
+    if (token_len >= token_out_size) {
+        /* No solo cortarlo en silencio: un token JWT truncado da un 401
+         * "invalido" sin ninguna pista de por que (encontrado en auditoria,
+         * 24 ago) -- mejor fallar ahora con la causa clara. */
+        ESP_LOGE(TAG, "login: el token (%u bytes) no entra en el buffer de %u bytes, se descarta en vez de truncarlo",
+                 (unsigned)token_len, (unsigned)token_out_size);
+        cJSON_Delete(parsed);
+        return ESP_FAIL;
+    }
     strncpy(token_out, token_item->valuestring, token_out_size - 1);
     token_out[token_out_size - 1] = '\0';
     cJSON_Delete(parsed);
@@ -313,9 +372,19 @@ static esp_err_t http_register_device(const char *token)
 
 /* --- Armado del JSON de viajes + sync real --- */
 
-static void add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int64_t boot_epoch_s)
+/* Devuelve false si no se pudo armar/agregar el objeto (tipicamente sin
+ * memoria) — el llamador NO debe contar ese viaje como sincronizado en ese
+ * caso (bug real encontrado en auditoria, 24 ago: antes de este chequeo, un
+ * cJSON_CreateObject() fallido en OOM se contaba igual en `added`, y
+ * storage_mark_trips_synced() marcaba el viaje como sincronizado aunque
+ * nunca se mando al backend — perdida de datos definitiva y silenciosa). */
+static bool add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int64_t boot_epoch_s)
 {
     cJSON *t = cJSON_CreateObject();
+    if (t == NULL) {
+        ESP_LOGE(TAG, "sin memoria para armar el JSON de un viaje, se reintenta el proximo ciclo de sync");
+        return false;
+    }
 
     /* Preferimos recorded_at_epoch_s (hora real guardada por storage cuando
      * cerro el viaje, ver storage.h) por sobre reconstruirla con el
@@ -346,6 +415,7 @@ static void add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int6
      * el schema del backend) hasta definirlos bien. */
 
     cJSON_AddItemToArray(trips_array, t);
+    return true;
 }
 
 esp_err_t connectivity_sync_trip_history(void)
@@ -394,14 +464,25 @@ esp_err_t connectivity_sync_trip_history(void)
     int64_t boot_epoch_s = time(NULL) - (esp_timer_get_time() / 1000000);
 
     cJSON *root = cJSON_CreateObject();
+    cJSON *trips_array = root != NULL ? cJSON_AddArrayToObject(root, "trips") : NULL;
+    if (root == NULL || trips_array == NULL) {
+        ESP_LOGE(TAG, "sin memoria para armar el JSON de sync, se reintenta el proximo ciclo");
+        if (root != NULL) cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
+    }
     cJSON_AddStringToObject(root, "device_uid", s_device_uid);
-    cJSON *trips_array = cJSON_AddArrayToObject(root, "trips");
 
+    /* Se corta en el primer viaje que no se pudo agregar (en vez de
+     * saltearlo y seguir con el siguiente): storage_mark_trips_synced solo
+     * entiende "los primeros N viajes desde el cursor", no un conjunto con
+     * huecos — si el viaje 3 fallara por OOM pero el 4 se agregara bien,
+     * marcar "4 sincronizados" incluiria al 3 (que nunca se mando) como
+     * si lo estuviera. Bug real evitado en auditoria (24 ago). */
     uint32_t added = 0;
     for (uint32_t i = synced_count; i < batch_end; i++) {
         trip_record_t rec;
         if (storage_get_trip(i, &rec) != ESP_OK) break;
-        add_trip_to_array(trips_array, &rec, boot_epoch_s);
+        if (!add_trip_to_array(trips_array, &rec, boot_epoch_s)) break;
         added++;
     }
 
@@ -411,7 +492,8 @@ esp_err_t connectivity_sync_trip_history(void)
         return ESP_ERR_NO_MEM;
     }
 
-    err = http_post_json("/api/v1/sync/trips", token, body_str, NULL, 0, NULL);
+    char resp[256];
+    err = http_post_json("/api/v1/sync/trips", token, body_str, resp, sizeof(resp), NULL);
     free(body_str);
 
     if (err == ESP_OK) {

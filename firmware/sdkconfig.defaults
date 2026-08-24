@@ -17,6 +17,17 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 
+# Subido de 4096 (default) a 8192: los callbacks de notify de NimBLE
+# terminan bajando por toda la cadena obd_driver -> pid_engine -> state_store
+# -> notify_subscribers -> [storage (puede escribir a FAT), ui (toma el
+# mutex de LVGL y hace varios snprintf de floats)], todo en el stack de ESTA
+# tarea. Encontrado en auditoria (24 ago) por el mismo patron que ya causo
+# un bug real de corrupcion silenciosa en connectivity_task (stack corto +
+# operacion pesada = "PK verify failed" en vez de crash limpio) — no hay
+# guru meditation que avise si esto se queda corto, asi que se subio antes
+# de que pase en vez de esperar a diagnosticarlo despues.
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+
 # PSRAM: la placa de prototipo actual (M5Stack Core2, módulo D0WDQ6-V3) trae 8MB,
 # lo activamos por si LVGL lo necesita para buffers. Modo quad porque el ESP32
 # clásico (a diferencia del S3) no soporta PSRAM en modo octal.

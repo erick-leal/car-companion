@@ -47,13 +47,57 @@ static esp_timer_handle_t s_response_timeout_timer;
 static uint8_t s_response_buf[RESPONSE_BUF_SIZE];
 static size_t s_response_len = 0;
 
+/* BUG DE INIT ENCONTRADO EN AUDITORIA (24 ago): si el ELM327 nunca responde
+ * al primer paso del init (ATZ) — el propio codigo admite que no espera
+ * confirmacion del write del CCCD antes de mandarlo, asi que perder el
+ * primer ATZ por timing es un caso real — send_next_init_step() nunca se
+ * reintenta. s_init_step queda congelado, s_ready nunca pasa a true, y
+ * obd_driver_is_connected() da false PARA SIEMPRE aunque el enlace BLE
+ * siga vivo (no hay disconnect que dispare start_scan() de nuevo). El
+ * unico sintoma antes de este fix era el timeout generico de mas abajo.
+ * INIT_STEP_MAX_RETRIES limita los reintentos por paso antes de forzar una
+ * reconexion completa (en vez de quedar colgado para siempre). */
+#define INIT_STEP_MAX_RETRIES 3
+static uint8_t s_init_step_retries;
+
+/* ATZ (reset), ATE0 (echo off — clave, si no el ELM327 nos devuelve el
+ * comando que mandamos antes de la respuesta real), ATL0 (sin saltos de
+ * linea extra), ATSP0 (autodetectar protocolo del vehiculo). Declarado acá
+ * arriba (no donde se usa mas abajo) porque on_response_timeout necesita
+ * loguear el paso actual si hace timeout. */
+static const char *const s_init_cmds[] = { "ATZ", "ATE0", "ATL0", "ATSP0" };
+#define INIT_CMD_COUNT (sizeof(s_init_cmds) / sizeof(s_init_cmds[0]))
+static size_t s_init_step;
+
+static void send_next_init_step(void);
+static void on_init_step_response(const uint8_t *data, size_t len, void *ctx);
+
 static void on_response_timeout(void *arg)
 {
+    bool was_init_step = (s_pending_cb == on_init_step_response);
     ESP_LOGW(TAG, "timeout esperando respuesta OBD, liberando turno para el siguiente comando");
     s_pending_cb = NULL;
     s_pending_ctx = NULL;
     s_response_len = 0;
     xSemaphoreGive(s_cmd_mutex);
+
+    if (was_init_step) {
+        s_init_step_retries++;
+        if (s_init_step_retries <= INIT_STEP_MAX_RETRIES) {
+            ESP_LOGW(TAG, "el paso %u del init ELM327 ('%s') no respondio, reintento %u/%u",
+                     (unsigned)s_init_step, s_init_cmds[s_init_step],
+                     (unsigned)s_init_step_retries, (unsigned)INIT_STEP_MAX_RETRIES);
+            send_next_init_step(); // reintenta el MISMO paso (s_init_step no avanzo)
+        } else {
+            ESP_LOGE(TAG, "el init ELM327 se colgo en el paso %u ('%s') tras %u reintentos — "
+                          "forzando desconexion BLE para reescanear desde cero",
+                     (unsigned)s_init_step, s_init_cmds[s_init_step], (unsigned)INIT_STEP_MAX_RETRIES);
+            if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                // BLE_GAP_EVENT_DISCONNECT hace el resto (start_scan(), limpiar estado)
+            }
+        }
+    }
 }
 
 static void start_scan(void);
@@ -139,15 +183,21 @@ static int on_svc_disc(uint16_t conn_handle,
         return 0;
     }
     ESP_LOGI(TAG, "servicio OBD encontrado, descubriendo caracteristicas...");
-    ble_gattc_disc_all_chrs(conn_handle, service->start_handle, service->end_handle,
-                             on_chr_disc, NULL);
+    int rc = ble_gattc_disc_all_chrs(conn_handle, service->start_handle, service->end_handle,
+                                      on_chr_disc, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gattc_disc_all_chrs fallo (%d) — no se van a encontrar las caracteristicas, quedamos sin OBD hasta la proxima desconexion/reconexion", rc);
+    }
     return 0;
 }
 
 static void discover_service(uint16_t conn_handle)
 {
     ble_uuid16_t svc_uuid = BLE_UUID16_INIT(OBD_BLE_SERVICE_UUID);
-    ble_gattc_disc_svc_by_uuid(conn_handle, &svc_uuid.u, on_svc_disc, NULL);
+    int rc = ble_gattc_disc_svc_by_uuid(conn_handle, &svc_uuid.u, on_svc_disc, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gattc_disc_svc_by_uuid fallo (%d) — no se va a poder usar el OBD en esta conexion", rc);
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -162,17 +212,15 @@ static void obd_write_raw(const char *cmd)
     }
     char buf[32];
     int n = snprintf(buf, sizeof(buf), "%s\r", cmd); // ELM327 espera CR al final
-    ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_char_handle, buf, n);
+    int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_char_handle, buf, n);
+    if (rc != 0) {
+        /* Antes de este chequeo, un write fallido era mudo: el comando
+         * nunca salia y el unico sintoma era el timeout generico 3s
+         * despues, sin decir por que. */
+        ESP_LOGE(TAG, "ble_gattc_write_no_rsp_flat fallo (%d) mandando '%s' — el comando no salio, "
+                      "se va a ver como timeout en 3s sin esta explicacion", rc, cmd);
+    }
 }
-
-/* ATZ (reset), ATE0 (echo off — clave, si no el ELM327 nos devuelve el
- * comando que mandamos antes de la respuesta real), ATL0 (sin saltos de
- * linea extra), ATSP0 (autodetectar protocolo del vehiculo). */
-static const char *const s_init_cmds[] = { "ATZ", "ATE0", "ATL0", "ATSP0" };
-#define INIT_CMD_COUNT (sizeof(s_init_cmds) / sizeof(s_init_cmds[0]))
-static size_t s_init_step;
-
-static void send_next_init_step(void);
 
 static void on_init_step_response(const uint8_t *data, size_t len, void *ctx)
 {
@@ -181,6 +229,7 @@ static void on_init_step_response(const uint8_t *data, size_t len, void *ctx)
      * respuestas del init se pisen entre si o con el primer poll de PIDs
      * de pid_engine, que arranca apenas obd_driver_is_connected() da true. */
     s_init_step++;
+    s_init_step_retries = 0; // el paso anterior respondio bien, resetear el contador para el siguiente
     send_next_init_step();
 }
 
@@ -198,6 +247,11 @@ static void send_next_init_step(void)
      * tocar el mutex) — no hay con quien pisarse. */
     s_pending_cb = on_init_step_response;
     s_pending_ctx = NULL;
+    /* Descarta cualquier byte que haya quedado a medio acumular de un
+     * comando anterior (ej. un reintento de este mismo paso tras timeout) —
+     * si no, esos bytes viejos se pegarian al principio de la respuesta de
+     * ESTE comando (encontrado en auditoria, 24 ago). */
+    s_response_len = 0;
     obd_write_raw(s_init_cmds[s_init_step]);
     esp_timer_start_once(s_response_timeout_timer, COMMAND_TIMEOUT_MS * 1000ULL);
 }
@@ -206,6 +260,7 @@ static void obd_send_init_sequence(void)
 {
     ESP_LOGI(TAG, "enviando secuencia de init ELM327...");
     s_init_step = 0;
+    s_init_step_retries = 0;
     send_next_init_step();
 }
 
@@ -239,9 +294,19 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
             if (matched_by_uuid || matched_by_name) {
                 ESP_LOGI(TAG, "encontrado adaptador OBD, conectando...");
-                ble_gap_disc_cancel();
-                ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 5000, NULL,
-                                 gap_event_handler, NULL);
+                int cancel_rc = ble_gap_disc_cancel();
+                if (cancel_rc != 0 && cancel_rc != BLE_HS_EALREADY) {
+                    ESP_LOGW(TAG, "ble_gap_disc_cancel fallo (%d), se intenta conectar igual", cancel_rc);
+                }
+                int connect_rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &event->disc.addr, 5000, NULL,
+                                                  gap_event_handler, NULL);
+                if (connect_rc != 0) {
+                    /* Sin este chequeo, un fallo acá dejaba al dispositivo sin
+                     * escaneo NI conexion en curso — sin OBD hasta un reboot,
+                     * sin ningun log que lo explicara. */
+                    ESP_LOGE(TAG, "ble_gap_connect fallo (%d), reintentando escaneo", connect_rc);
+                    start_scan();
+                }
             }
             return 0;
         }
@@ -307,6 +372,17 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                     s_pending_ctx = NULL;
                     cb(s_response_buf, s_response_len, ctx);
                     xSemaphoreGive(s_cmd_mutex);
+                } else {
+                    /* Llego una respuesta completa sin nadie esperandola —
+                     * tipicamente una respuesta tardia de un comando que ya
+                     * hizo timeout. No es grave (se descarta, no se
+                     * confunde con la del comando actual gracias al reset
+                     * de s_response_len al armar cada comando nuevo), pero
+                     * es una señal real de que el adaptador esta mas lento
+                     * que nuestro COMMAND_TIMEOUT_MS — vale la pena verlo
+                     * en el log si se repite seguido. */
+                    ESP_LOGW(TAG, "respuesta OBD tardia descartada (%u bytes, nadie la esperaba)",
+                             (unsigned)s_response_len);
                 }
                 s_response_len = 0;
             }
@@ -411,6 +487,7 @@ esp_err_t obd_driver_send_command(const char *command, obd_response_cb_t cb, voi
 
     s_pending_cb = cb;
     s_pending_ctx = ctx;
+    s_response_len = 0; // idem nota en send_next_init_step: no arrastrar bytes de un comando anterior
     obd_write_raw(command);
     esp_timer_start_once(s_response_timeout_timer, COMMAND_TIMEOUT_MS * 1000ULL);
     /* El mutex se libera en dos lugares posibles ahora: BLE_GAP_EVENT_NOTIFY_RX

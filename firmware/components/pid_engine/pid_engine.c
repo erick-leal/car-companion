@@ -170,6 +170,14 @@ static void handle_dtc_response(const uint8_t *raw, size_t raw_len, void *ctx)
     (void)ctx;
     char text[128];
     size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    if (raw_len > copy_len) {
+        /* Con varios codigos DTC reales la respuesta puede ser larga —
+         * truncarla en silencio significaria mostrar menos fallas de las
+         * que realmente hay, sin ningun aviso (encontrado en auditoria,
+         * 24 ago). */
+        ESP_LOGW(TAG, "lectura de DTC: respuesta de %u bytes truncada a %u para parsear, puede faltar algun codigo",
+                 (unsigned)raw_len, (unsigned)copy_len);
+    }
     memcpy(text, raw, copy_len);
     text[copy_len] = '\0';
 
@@ -199,7 +207,20 @@ esp_err_t pid_engine_read_dtc_codes(void)
         return ESP_ERR_INVALID_STATE;
     }
     state_store_set_dtc_read_in_progress(true);
-    return obd_driver_send_command("03", handle_dtc_response, NULL);
+    esp_err_t err = obd_driver_send_command("03", handle_dtc_response, NULL);
+    if (err != ESP_OK) {
+        /* BUG REAL ENCONTRADO EN AUDITORIA (24 ago): si el turno de comando
+         * estaba ocupado (ESP_ERR_TIMEOUT) o el OBD se desconecto justo en
+         * este instante (ESP_ERR_INVALID_STATE), el comando nunca sale y
+         * handle_dtc_response() nunca se ejecuta -- dtc_read_in_progress se
+         * quedaba pegado en true para siempre, y la pantalla de Fallas en
+         * "Leyendo..." indefinidamente, sin que un segundo toque de LEER
+         * la sacara de ahi. */
+        ESP_LOGW(TAG, "no se pudo enviar el pedido de lectura de DTC (%s), se cancela el 'Leyendo...' en pantalla",
+                 esp_err_to_name(err));
+        state_store_set_dtc_read_in_progress(false);
+    }
+    return err;
 }
 
 static void handle_dtc_clear_response(const uint8_t *raw, size_t raw_len, void *ctx)
@@ -231,7 +252,14 @@ esp_err_t pid_engine_clear_dtc_codes(void)
         return ESP_ERR_INVALID_STATE;
     }
     state_store_set_dtc_clear_in_progress(true);
-    return obd_driver_send_command("04", handle_dtc_clear_response, NULL);
+    esp_err_t err = obd_driver_send_command("04", handle_dtc_clear_response, NULL);
+    if (err != ESP_OK) {
+        // mismo bug y mismo fix que pid_engine_read_dtc_codes, ver nota ahi
+        ESP_LOGW(TAG, "no se pudo enviar el pedido de borrado de DTC (%s), se cancela el 'Borrando...' en pantalla",
+                 esp_err_to_name(err));
+        state_store_set_dtc_clear_in_progress(false);
+    }
+    return err;
 }
 
 /* DEBUG temporal: descubrir que PIDs estandar soporta realmente esta ECU
@@ -272,6 +300,10 @@ static void discover_supported_pids(void)
 #define HEALTH_LOG_INTERVAL_US (5LL * 60 * 1000000)
 static int64_t s_last_health_log_us = 0;
 
+/* 0 = no hay pedido de lectura/borrado de DTC en curso rastreado por el
+ * watchdog de mas abajo (ver poll_task). */
+static int64_t s_dtc_action_started_us = 0;
+
 static void log_health_if_due(void)
 {
     int64_t now = esp_timer_get_time();
@@ -279,11 +311,28 @@ static void log_health_if_due(void)
         return;
     }
     s_last_health_log_us = now;
-    ESP_LOGI(TAG, "salud: heap_libre=%u min_heap_visto=%u obd_conectado=%d uptime=%llds",
+
+    /* Stack libre (en bytes, StackType_t es uint8_t en este puerto) de esta
+     * tarea y de la del host de NimBLE — agregado en auditoria (24 ago)
+     * porque un stack corto no siempre crashea limpio: puede corromper en
+     * silencio el resultado de una operacion (ya paso con connectivity_task
+     * y TLS, "PK verify failed" en vez de un panic). Con esto en el log,
+     * si algo raro pasa despues de una manejada larga, hay un numero medido
+     * para mirar en vez de tener que adivinar si el stack fue la causa. Un
+     * valor bajando con el tiempo (no solo un numero chico puntual) es la
+     * señal real de alarma. */
+    UBaseType_t this_task_stack_free = uxTaskGetStackHighWaterMark(NULL);
+    TaskHandle_t nimble_task = xTaskGetHandle("nimble_host");
+    int nimble_stack_free = nimble_task != NULL ? (int)uxTaskGetStackHighWaterMark(nimble_task) : -1;
+
+    ESP_LOGI(TAG, "salud: heap_libre=%u min_heap_visto=%u obd_conectado=%d uptime=%llds "
+                  "stack_libre(pid_engine)=%uB stack_libre(nimble_host)=%dB",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size(),
              (int)obd_driver_is_connected(),
-             (long long)(now / 1000000));
+             (long long)(now / 1000000),
+             (unsigned)this_task_stack_free,
+             nimble_stack_free);
 }
 
 static void poll_task(void *arg)
@@ -336,10 +385,32 @@ static void poll_task(void *arg)
          * este ciclo para que la pantalla de Fallas no espere una vuelta
          * completa de 12 PIDs (~2s) sin necesidad. */
         if (state_store_consume_dtc_read_request()) {
-            pid_engine_read_dtc_codes();
+            if (pid_engine_read_dtc_codes() == ESP_OK) s_dtc_action_started_us = esp_timer_get_time();
         }
         if (state_store_consume_dtc_clear_request()) {
-            pid_engine_clear_dtc_codes();
+            if (pid_engine_clear_dtc_codes() == ESP_OK) s_dtc_action_started_us = esp_timer_get_time();
+        }
+
+        /* Watchdog del "Leyendo.../Borrando..." pegado (encontrado en
+         * auditoria, 24 ago): si el comando SI se mando bien pero la
+         * respuesta nunca llega, obd_driver limpia su propio timeout (3s)
+         * en silencio -- handle_dtc_response/handle_dtc_clear_response
+         * nunca se ejecutan, y nadie mas apaga el flag de "en progreso".
+         * Con margen sobre esos 3s, si sigue pendiente pasado 5s, se fuerza
+         * a apagar aca (la pantalla de Fallas se ve, el usuario puede
+         * volver a tocar LEER/BORRAR en vez de quedar pegada para siempre). */
+        if (s_dtc_action_started_us != 0) {
+            vehicle_state_t snap;
+            if (state_store_get(&snap) == ESP_OK) {
+                if (!snap.dtc_read_in_progress && !snap.dtc_clear_in_progress) {
+                    s_dtc_action_started_us = 0; // ya se resolvio (respuesta llego, o se desconecto)
+                } else if ((esp_timer_get_time() - s_dtc_action_started_us) > 5LL * 1000000) {
+                    ESP_LOGW(TAG, "el pedido de leer/borrar DTC no tuvo respuesta en 5s (timeout silencioso de obd_driver), forzando salida de 'Leyendo.../Borrando...' en pantalla");
+                    state_store_set_dtc_read_in_progress(false);
+                    state_store_set_dtc_clear_in_progress(false);
+                    s_dtc_action_started_us = 0;
+                }
+            }
         }
 
         for (size_t i = 0; i < POLL_LIST_LEN; i++) {

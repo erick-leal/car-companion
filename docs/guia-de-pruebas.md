@@ -262,10 +262,25 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
   confirma que el firmware seguía vivo intentando reconectar (no se colgó
   en silencio) — si en cambio el log se corta de golpe y no vuelve a
   aparecer nada, ahí sí hay un problema real (reinicio, crash).
-- **`salud: heap_libre=X min_heap_visto=Y obd_conectado=Z uptime=Ns`** —
-  cada 5min. Si `heap_libre` va bajando de forma sostenida a lo largo de
-  varias horas de manejo (no solo un vaivén normal), es un memory leak real
-  y sirve para saber más o menos cuándo empezó a degradarse.
+- **`salud: heap_libre=X min_heap_visto=Y obd_conectado=Z uptime=Ns
+  stack_libre(pid_engine)=AB stack_libre(nimble_host)=BB`** — cada 5min
+  (agregado 24 ago). Si `heap_libre` va bajando de forma sostenida a lo
+  largo de varias horas de manejo (no solo un vaivén normal), es un memory
+  leak real. Los dos `stack_libre` son nuevos: si alguno se acerca a 0 en
+  algún momento (sobre todo `nimble_host`, que hace bastante trabajo por
+  callback), es una señal real de que ese stack se quedó corto — avisar,
+  porque un stack corto no siempre crashea limpio, puede corromper datos en
+  silencio en vez de reiniciar.
+- **`todavia sin conexion OBD` / desconexiones seguidas**: si el log
+  muestra `WiFi: reintentando conectar en Xs` con `X` creciendo (1, 2, 4,
+  8... hasta 30) en vez de reintentar cada vez al toque, es el backoff
+  nuevo funcionando bien (24 ago) — antes reintentaba sin pausa todo el
+  tiempo que no había WiFi de casa cerca, que es la mayor parte de una
+  manejada real.
+- **Pantalla de Fallas pegada en "Leyendo..." o "Borrando..."**: no debería
+  pasar más (24 ago) — si el comando no se pudo mandar o la respuesta nunca
+  llegó, ahora hay un timeout de 5s que la saca sola. Si ves que queda
+  pegada más de 5-10s, es un bug real, avisar con el log.
 
 ## 8. Si algo no se ve bien
 

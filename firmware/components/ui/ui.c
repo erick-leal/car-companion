@@ -13,6 +13,7 @@
 #include "freertos/semphr.h"
 #include "lvgl.h"
 #include <stdio.h>
+#include <stdarg.h>
 
 static const char *TAG = "ui";
 
@@ -219,6 +220,27 @@ static void update_dashboard_widgets(const vehicle_state_t *state)
     lv_label_set_text(s_lbl_cel, state->check_engine_on ? "CHECK" : "");
 }
 
+/* Acumula texto formateado en un buffer de tamaño fijo sin poder desbordarlo
+ * — snprintf devuelve la longitud que HABRIA escrito, no la que realmente
+ * escribio; el patron "off += snprintf(buf+off, size-off, ...)" repetido
+ * varias veces puede dejar off > size si algun campo trunca, y la siguiente
+ * llamada pasaria "size - off" como un size_t negativo (numero gigante) —
+ * escritura fuera del buffer. Hoy los tamaños usados cierran justo, pero es
+ * una trampa para el proximo campo que se agregue (encontrado en auditoria,
+ * 24 ago). *off nunca supera buf_size con esto. */
+static void buf_append(char *buf, size_t buf_size, size_t *off, const char *fmt, ...)
+{
+    if (*off >= buf_size) return;
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(buf + *off, buf_size - *off, fmt, args);
+    va_end(args);
+    if (n > 0) {
+        size_t written = (size_t)n;
+        *off += written < (buf_size - *off) ? written : (buf_size - *off - 1);
+    }
+}
+
 /* Arma el texto de la pantalla de Fallas a partir de state_store. Separado
  * de update_dashboard_widgets porque las dos pantallas nunca estan activas
  * al mismo tiempo, pero conviene poder actualizarlas independientemente. */
@@ -248,7 +270,7 @@ static void update_dtc_widgets(const vehicle_state_t *state)
     char body[STATE_STORE_MAX_DTC * 7 + 1] = {0};
     size_t off = 0;
     for (uint8_t i = 0; i < state->dtc_count; i++) {
-        off += (size_t)snprintf(body + off, sizeof(body) - off, "%s\n", state->dtc_codes[i]);
+        buf_append(body, sizeof(body), &off, "%s\n", state->dtc_codes[i]);
     }
     lv_label_set_text(s_lbl_dtc_body, body);
     lv_obj_set_style_text_color(s_lbl_dtc_body, COL_DANGER, 0);
@@ -264,9 +286,9 @@ static void update_diag_widgets(const vehicle_state_t *state)
     if (s_lbl_diag_body == NULL) return;
 
     char body[320];
-    int off = 0;
-    off += snprintf(body + off, sizeof(body) - off,
-                     "CONEXION: %s\n", state->data_valid ? "OBD OK" : "SIN OBD");
+    size_t off = 0;
+    buf_append(body, sizeof(body), &off,
+               "CONEXION: %s\n", state->data_valid ? "OBD OK" : "SIN OBD");
     /* "hace Xs" en base a last_update_us != 0, NO a data_valid: desde que
      * agregamos state_store_set_disconnected() (22 ago), last_update_us
      * tambien se actualiza al momento de una desconexion real, asi que esto
@@ -276,17 +298,16 @@ static void update_diag_widgets(const vehicle_state_t *state)
      * minutos antes (encontrado en la manejada de prueba del 22 ago). */
     if (state->last_update_us != 0) {
         int64_t age_s = (esp_timer_get_time() - state->last_update_us) / 1000000;
-        off += snprintf(body + off, sizeof(body) - off,
-                         "ACTUALIZADO: hace %llds\n", (long long)age_s);
+        buf_append(body, sizeof(body), &off, "ACTUALIZADO: hace %llds\n", (long long)age_s);
     } else {
-        off += snprintf(body + off, sizeof(body) - off, "ACTUALIZADO: nunca\n");
+        buf_append(body, sizeof(body), &off, "ACTUALIZADO: nunca\n");
     }
-    off += snprintf(body + off, sizeof(body) - off, "\n");
-    off += snprintf(body + off, sizeof(body) - off, "CARGA MOTOR: %u%%\n", state->engine_load_pct);
-    off += snprintf(body + off, sizeof(body) - off, "TEMP ADMISION: %d C\n", state->intake_air_temp_c);
-    off += snprintf(body + off, sizeof(body) - off, "TEMP AMBIENTE: %d C\n", state->ambient_air_temp_c);
-    off += snprintf(body + off, sizeof(body) - off, "PRESION BAROM: %u kPa\n", state->barometric_pressure_kpa);
-    snprintf(body + off, sizeof(body) - off, "PRESION RIEL: %lu kPa", (unsigned long)state->fuel_rail_pressure_kpa);
+    buf_append(body, sizeof(body), &off, "\n");
+    buf_append(body, sizeof(body), &off, "CARGA MOTOR: %u%%\n", state->engine_load_pct);
+    buf_append(body, sizeof(body), &off, "TEMP ADMISION: %d C\n", state->intake_air_temp_c);
+    buf_append(body, sizeof(body), &off, "TEMP AMBIENTE: %d C\n", state->ambient_air_temp_c);
+    buf_append(body, sizeof(body), &off, "PRESION BAROM: %u kPa\n", state->barometric_pressure_kpa);
+    buf_append(body, sizeof(body), &off, "PRESION RIEL: %lu kPa", (unsigned long)state->fuel_rail_pressure_kpa);
 
     lv_label_set_text(s_lbl_diag_body, body);
     lv_obj_set_style_text_color(s_lbl_diag_body, state->data_valid ? COL_VALUE : COL_CAPTION, 0);

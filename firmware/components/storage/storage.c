@@ -3,6 +3,8 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +22,38 @@ static const char *TAG = "storage";
 #define TRIP_END_IDLE_TIMEOUT_S (15 * 60)
 
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
+
+/* BUG REAL DE CONCURRENCIA (encontrado en auditoria, 24 ago): on_state_change
+ * corre en la tarea del host de NimBLE (via los setters normales de PIDs) Y
+ * TAMBIEN en la tarea de pid_engine (via state_store_set_disconnected(), ver
+ * poll_task en pid_engine.c) — sin ningun mutex, dos llamadas casi
+ * simultaneas podian pasar juntas el chequeo `if (!s_in_trip)` y guardar el
+ * mismo viaje dos veces, o pisarse escribiendo maint.bin/trips.bin al mismo
+ * tiempo (FATFS no tiene lock propio en este proyecto, CONFIG_FATFS_FS_LOCK=0).
+ * Un solo mutex protege todo el estado compartido de este archivo: el viaje
+ * en curso, s_maint, y el cursor de sync. */
+static SemaphoreHandle_t s_mutex;
+
+/* Timeout generoso (no como el de state_store) porque ademas de memoria esto
+ * puede estar esperando E/S real de flash (fopen/fwrite/fclose sobre
+ * FATFS+wear-levelling). Si esto se agota en la practica, hay una tarea
+ * quedandose con el lock mucho mas de lo esperado — investigar, no subir
+ * el timeout para silenciarlo. */
+#define STORAGE_LOCK_TIMEOUT_TICKS pdMS_TO_TICKS(500)
+
+static bool storage_lock(void)
+{
+    if (xSemaphoreTake(s_mutex, STORAGE_LOCK_TIMEOUT_TICKS) != pdTRUE) {
+        ESP_LOGE(TAG, "timeout esperando el mutex de storage (500ms) — alguna operacion de flash se esta demorando de mas");
+        return false;
+    }
+    return true;
+}
+
+static void storage_unlock(void)
+{
+    xSemaphoreGive(s_mutex);
+}
 
 /* Cache en RAM del estado de mantenimiento, con escritura directa a flash en
  * cada cambio (se actualiza poco: al cerrar un viaje real y al marcar un
@@ -213,10 +247,12 @@ static void end_trip(int64_t now_us)
 static void on_state_change(const vehicle_state_t *state, void *ctx)
 {
     (void)ctx;
+    if (!storage_lock()) return; // se pierde esta actualizacion puntual antes que corromper un archivo
     int64_t now = esp_timer_get_time();
 
     if (!state->data_valid) {
         if (s_in_trip) end_trip(now);
+        storage_unlock();
         return;
     }
 
@@ -225,7 +261,10 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
         if (!s_in_trip) start_trip(now, state);
     }
 
-    if (!s_in_trip) return;
+    if (!s_in_trip) {
+        storage_unlock();
+        return;
+    }
 
     /* Integrar distancia/combustible contra el tiempo real transcurrido
      * desde la ultima muestra. Se descarta un salto de tiempo grande (mas de
@@ -251,6 +290,7 @@ static void on_state_change(const vehicle_state_t *state, void *ctx)
     if ((now - s_last_rpm_nonzero_us) > (int64_t)TRIP_END_IDLE_TIMEOUT_S * 1000000) {
         end_trip(now);
     }
+    storage_unlock();
 }
 
 /* trip_record_t gano un campo nuevo el 23-24 ago (recorded_at_epoch_s), lo
@@ -282,6 +322,12 @@ static void migrate_trips_file_if_needed(void)
 
 esp_err_t storage_init(void)
 {
+    s_mutex = xSemaphoreCreateMutex();
+    if (s_mutex == NULL) {
+        ESP_LOGE(TAG, "no se pudo crear el mutex de storage");
+        return ESP_ERR_NO_MEM;
+    }
+
     const esp_vfs_fat_mount_config_t mount_config = {
         .max_files = 4,
         .format_if_mount_failed = true, // primer boot: la particion viene sin formatear
@@ -307,7 +353,11 @@ esp_err_t storage_init(void)
     return ESP_OK;
 }
 
-esp_err_t storage_get_trip_count(uint32_t *out_count)
+/* Helpers "_locked": asumen que el llamador YA tiene el mutex. Existen para
+ * que storage_get_pending_sync_count pueda reusar la logica de contar sin
+ * volver a tomar el mutex (un mutex normal de FreeRTOS no es reentrante —
+ * tomarlo dos veces desde la misma tarea se traba). */
+static esp_err_t get_trip_count_locked(uint32_t *out_count)
 {
     FILE *f = fopen(TRIPS_FILE, "rb");
     if (f == NULL) {
@@ -321,10 +371,20 @@ esp_err_t storage_get_trip_count(uint32_t *out_count)
     return ESP_OK;
 }
 
+esp_err_t storage_get_trip_count(uint32_t *out_count)
+{
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = get_trip_count_locked(out_count);
+    storage_unlock();
+    return err;
+}
+
 esp_err_t storage_get_trip(uint32_t index, trip_record_t *out)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     FILE *f = fopen(TRIPS_FILE, "rb");
     if (f == NULL) {
+        storage_unlock();
         return ESP_ERR_NOT_FOUND;
     }
     esp_err_t ret = ESP_OK;
@@ -333,59 +393,73 @@ esp_err_t storage_get_trip(uint32_t index, trip_record_t *out)
         ret = ESP_ERR_NOT_FOUND;
     }
     fclose(f);
+    storage_unlock();
     return ret;
 }
 
 esp_err_t storage_get_pending_sync_count(uint32_t *out_count)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     uint32_t total;
-    esp_err_t err = storage_get_trip_count(&total);
-    if (err != ESP_OK) return err;
+    get_trip_count_locked(&total);
     *out_count = total > s_synced_trip_count ? total - s_synced_trip_count : 0;
+    storage_unlock();
     return ESP_OK;
 }
 
 esp_err_t storage_mark_trips_synced(uint32_t up_to_count)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     if (up_to_count > s_synced_trip_count) {
         s_synced_trip_count = up_to_count;
         save_sync_state();
     }
+    storage_unlock();
     return ESP_OK;
 }
 
 esp_err_t storage_get_maintenance(maintenance_state_t *out)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     *out = s_maint;
+    storage_unlock();
     return ESP_OK;
 }
 
 esp_err_t storage_mark_oil_change_done(void)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     s_maint.oil_km_remaining = STORAGE_OIL_CHANGE_INTERVAL_KM;
     save_maintenance();
+    storage_unlock();
     ESP_LOGI(TAG, "cambio de aceite marcado (odometro propio: %.1fkm)", s_maint.odometer_km);
     return ESP_OK;
 }
 
 esp_err_t storage_mark_filter_change_done(void)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     s_maint.filter_km_remaining = STORAGE_FILTER_CHANGE_INTERVAL_KM;
     save_maintenance();
+    storage_unlock();
     ESP_LOGI(TAG, "cambio de filtro marcado (odometro propio: %.1fkm)", s_maint.odometer_km);
     return ESP_OK;
 }
 
 esp_err_t storage_adjust_oil_km_remaining(float delta_km)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     s_maint.oil_km_remaining += delta_km;
     save_maintenance();
+    storage_unlock();
     return ESP_OK;
 }
 
 esp_err_t storage_adjust_filter_km_remaining(float delta_km)
 {
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
     s_maint.filter_km_remaining += delta_km;
     save_maintenance();
+    storage_unlock();
     return ESP_OK;
 }
