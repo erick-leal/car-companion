@@ -313,6 +313,47 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Consumo de batería (24 ago)
+
+Erick midió ~5% de batería del M5 en menos de 10 minutos, prendido pero sin
+estar conectado al auto ni al WiFi de casa — el caso que más importa en la
+práctica (el dispositivo va a pasar la mayor parte del tiempo prendido en
+esa situación: guardado, o en el auto pero apagado). Dos causas reales
+encontradas:
+
+- **Escaneo BLE al 100% de duty cycle, para siempre**: `start_scan()` pasaba
+  `itvl=0, window=0` a NimBLE, que los reemplaza por sus defaults de "scan
+  rápido" (`BLE_GAP_SCAN_FAST_INTERVAL_MIN` = `BLE_GAP_SCAN_FAST_WINDOW` =
+  30ms) — con intervalo igual a ventana, el radio BLE escanea sin parar,
+  literalmente el 100% del tiempo, mientras no haya adaptador conectado.
+  Cambiado al perfil `SLOW1` que ya trae NimBLE para descubrimiento en
+  segundo plano (11.25ms de escaneo cada 1280ms, ~1% de duty cycle en vez de
+  100%). Costo: hasta ~1.3s más para encontrar el adaptador al subirse al
+  auto — imperceptible comparado con el ahorro el resto del tiempo.
+- **WiFi sin modo de ahorro de energía**: sin `esp_wifi_set_ps()`, el radio
+  de WiFi queda en `WIFI_PS_NONE` (siempre activo) — tanto conectado como
+  reintentando en loop. Agregado `WIFI_PS_MIN_MODEM` (el radio duerme entre
+  balizas del punto de acceso), único costo real: algo más de latencia en la
+  sync, que ya corre en segundo plano sin apuro.
+
+**No confirmado todavía en hardware** (el M5 no estaba conectado por USB al
+momento de este cambio) — falta reflashear y volver a medir cuánta batería
+baja en 10 minutos en las mismas condiciones, para confirmar la mejora real.
+
+**Quedó afuera a propósito, por ser más riesgoso**: habilitar
+`CONFIG_PM_ENABLE` + tickless idle dejaría que el CPU baje de frecuencia o
+entre en light-sleep en momentos ociosos — probablemente el ahorro más
+grande de todos, pero light-sleep con BLE+WiFi activos a la vez necesita
+soporte específico de coexistencia y puede introducir problemas de timing
+sutiles (respuestas BLE perdidas, desconexiones) que no vale la pena
+arriesgar sin poder probarlo con calma en el auto real. Si el consumo sigue
+siendo alto después de este cambio, es el siguiente lugar a mirar.
+
+Otro sospechoso menor no tocado: el backlight de la pantalla está fijo a
+2.80V (`DCDC3` en `core2_power.c`), sin lógica de brillo — bajarlo ahorraría
+algo pero podría afectar la visibilidad al sol dentro del auto, así que no
+se tocó sin pedirlo explícitamente.
+
 ## Auditoria de memoria y casos borde (24 ago)
 
 Repaso completo de todos los componentes buscando fugas de memoria, stacks

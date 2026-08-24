@@ -197,6 +197,18 @@ Menú → **Mantenimiento**.
   confirmó a ojo en el M5 real todavía, avisar si algún texto se ve cortado
   o los botones se superponen.
 
+## 5.5. Consumo de batería (nuevo, 24 ago)
+
+Con el M5 prendido, sin conectar ni al auto ni al WiFi de casa (el caso que
+más importa: la mayor parte del tiempo que el dispositivo pasa prendido), se
+midió ~5% de batería gastado en 10 minutos antes de este fix. Causa: el
+escaneo BLE quedaba al 100% de duty cycle para siempre. Ya arreglado (ver
+`firmware/README.md`), pero **falta confirmar el número real** — repetir la
+misma prueba (prender el M5 sin conectar a nada, dejarlo 10 min, ver cuánto
+bajó la batería) y comparar contra el ~5%/10min de antes. Si sigue siendo
+alto, avisar — el siguiente sospechoso (`CONFIG_PM_ENABLE`, light-sleep del
+CPU) es más riesgoso y quedó fuera de este cambio a propósito.
+
 ## 6. Sincronización con el backend (nuevo, 23 ago)
 
 No es una pantalla — pasa solo en segundo plano. Requiere haber completado

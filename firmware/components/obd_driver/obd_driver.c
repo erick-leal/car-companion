@@ -398,8 +398,21 @@ static void start_scan(void)
 {
     struct ble_gap_disc_params disc_params = {0};
     disc_params.passive = 0;
-    disc_params.itvl = 0;
-    disc_params.window = 0;
+    /* BUG DE BATERIA REAL ENCONTRADO EN USO (24 ago): con itvl=0 y window=0,
+     * NimBLE los reemplaza por sus defaults de "scan rapido"
+     * (BLE_GAP_SCAN_FAST_INTERVAL_MIN = BLE_GAP_SCAN_FAST_WINDOW = 30ms) —
+     * como intervalo == ventana, el radio BLE escanea SIN PARAR, 100% del
+     * tiempo, para siempre mientras no haya adaptador conectado (o sea, la
+     * mayor parte del uso real: M5 prendido sin el auto cerca). Erick midio
+     * ~5% de bateria en 10 minutos con el M5 prendido sin conectar a nada.
+     * Se usa el perfil "SLOW1" que ya trae NimBLE para descubrimiento en
+     * segundo plano: escanea 11.25ms cada 1280ms (~1% de duty cycle) en vez
+     * de 100%. Encontrar el adaptador puede tardar hasta ~1.3s mas en el
+     * peor caso — imperceptible al subirse al auto, comparado con el ahorro
+     * de bateria durante todo el resto del tiempo que el M5 esta prendido
+     * sin el auto. */
+    disc_params.itvl = BLE_GAP_SCAN_SLOW_INTERVAL1;
+    disc_params.window = BLE_GAP_SCAN_SLOW_WINDOW1;
     /* En 0 a proposito: el vLinker manda su UUID de servicio (lo que
      * usamos para matchear) en un paquete que el controlador puede tratar
      * como "duplicado" del mismo address si se filtra — con filtro en 1 el

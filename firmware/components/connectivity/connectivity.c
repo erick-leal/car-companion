@@ -198,6 +198,18 @@ static esp_err_t wifi_and_sntp_start(void)
         return err;
     }
 
+    /* BUG DE BATERIA REAL ENCONTRADO EN USO (24 ago): sin esto, el radio de
+     * WiFi queda siempre activo (WIFI_PS_NONE, el default cuando
+     * CONFIG_PM_ENABLE esta apagado) — sea que este conectado a la red de
+     * casa, o reintentando conectar en loop la mayor parte del tiempo real
+     * de uso (manejando, sin WiFi cerca). WIFI_PS_MIN_MODEM deja que el
+     * radio duerma entre balizas del punto de acceso (se despierta solo
+     * para escuchar el DTIM) — el unico costo real es un poco mas de
+     * latencia en la sync, que ya es un proceso de fondo sin apuro. No se
+     * chequea el rc: si falla, WiFi sigue funcionando en el modo anterior,
+     * no es motivo para cortar el arranque. */
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
     /* wait_for_sync=false: no bloquear el arranque esperando la hora. La
      * tarea de fondo de sync ya chequea time_is_valid() antes de usarla.
      * sync_cb solo loguea confirmacion — sin esto no habia forma de saber
