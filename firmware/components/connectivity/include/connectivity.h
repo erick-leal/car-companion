@@ -18,14 +18,18 @@
  * al terminar el intento, haya conectado o no. Ver attempt_sync_window()
  * en connectivity.c.
  *
- * Autenticacion: el backend hoy solo tiene JWT de usuario (login por
- * email/contraseña, 30 dias), no token de dispositivo separado — ver
- * docs/api-contract.md. connectivity hace login antes de cada sync para
- * sacar un token fresco, usando credenciales de
- * connectivity_secrets.h (NO se sube a git, ver connectivity_secrets.example.h).
+ * Autenticacion (actualizada 24 ago): DEVICE_TOKEN propio de este
+ * dispositivo (connectivity_secrets.h, NO se sube a git), generado una vez
+ * desde una maquina humana autenticada — ver
+ * connectivity_secrets.example.h y docs/api-contract.md. El firmware ya no
+ * hace login por HTTP.
  *
- * OTA (connectivity_check_ota) queda afuera de esta primera version —
- * ver TODO en connectivity.c.
+ * OTA (connectivity_check_ota, 24 ago): reusa la misma ventana de WiFi que
+ * el sync de viajes (ver attempt_sync_window en connectivity.c) para
+ * chequear GET /firmware/latest. Si hay version nueva Y el OBD no esta
+ * conectado (no aplicar mitad de un viaje real), descarga y flashea con
+ * esp_https_ota y reinicia sola. Requiere que partitions.csv tenga
+ * particiones ota_0/ota_1/otadata (agregado el mismo dia, ver ese archivo).
  */
 
 esp_err_t connectivity_init(void);

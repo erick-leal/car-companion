@@ -10,6 +10,8 @@
 #include "esp_mac.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_https_ota.h"
+#include "esp_app_desc.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -355,6 +357,46 @@ static esp_err_t http_post_json(const char *path, const char *bearer_token, cons
     return ESP_OK;
 }
 
+/* Igual que http_post_json pero GET, sin body ni token -- lo unico que la
+ * usa hoy es connectivity_check_ota() contra /firmware/latest, que es
+ * publico (ver firmware.ts en el backend). */
+static esp_err_t http_get_json(const char *path, char *resp_buf, size_t resp_buf_size)
+{
+    char url[192];
+    snprintf(url, sizeof(url), "%s%s", BACKEND_BASE_URL, path);
+
+    http_resp_ctx_t ctx = { .buf = resp_buf, .buf_size = resp_buf_size, .written = 0 };
+    if (resp_buf != NULL && resp_buf_size > 0) resp_buf[0] = '\0';
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 8000,
+        .event_handler = http_event_handler,
+        .user_data = &ctx,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "no se pudo crear el cliente HTTP para %s", path);
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HTTP GET %s fallo (transporte): %s", path, esp_err_to_name(err));
+        return err;
+    }
+    if (status < 200 || status >= 300) {
+        ESP_LOGW(TAG, "HTTP GET %s devolvio status %d", path, status);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 /* --- Armado del JSON de viajes + sync real ---
  *
  * Ya NO hay login ni registro por HTTP acá (bug de diseño arreglado el
@@ -545,6 +587,12 @@ static void attempt_sync_window(void)
             }
             state_store_set_sync_status(SYNC_STATUS_ERROR);
         }
+
+        /* Reusa esta misma ventana de WiFi para chequear firmware nuevo --
+         * no vale la pena prender el radio aparte solo para esto. Si hay
+         * OTA para aplicar y el OBD no esta conectado, connectivity_check_ota
+         * reinicia el dispositivo sola y esta funcion nunca vuelve. */
+        connectivity_check_ota();
     } else {
         ESP_LOGI(TAG, "no se encontro el WiFi de casa en %ds, apagando el radio hasta el proximo intento",
                  WIFI_CONNECT_WINDOW_MS / 1000);
@@ -601,11 +649,74 @@ esp_err_t connectivity_init(void)
     return ESP_OK;
 }
 
+/* Implementado el 24 ago, llamada desde attempt_sync_window() (ver mas
+ * abajo) reusando la misma ventana de WiFi que ya esta abierta para el
+ * sync de viajes -- no vale la pena prender el radio aparte solo para
+ * chequear version. */
 esp_err_t connectivity_check_ota(void)
 {
-    // TODO: GET a /api/v1/firmware/latest, comparar version, esp_https_ota si aplica.
-    // Queda afuera de la primera version de connectivity (23 ago) -- el foco
-    // fue sync de viajes. Ver firmware/README.md "Proximo paso concreto".
-    ESP_LOGW(TAG, "connectivity_check_ota: no implementado todavia");
-    return ESP_OK;
+    if (!s_wifi_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char resp[256];
+    esp_err_t err = http_get_json("/api/v1/firmware/latest", resp, sizeof(resp));
+    if (err != ESP_OK) {
+        return err; // sin firmware publicado (404) o error de red -- nada que hacer, no es grave
+    }
+
+    cJSON *root = cJSON_Parse(resp);
+    if (root == NULL) {
+        ESP_LOGW(TAG, "OTA: respuesta de /firmware/latest no es JSON valido");
+        return ESP_FAIL;
+    }
+    cJSON *version_item = cJSON_GetObjectItem(root, "version");
+    cJSON *url_item = cJSON_GetObjectItem(root, "url");
+    if (!cJSON_IsString(version_item) || !cJSON_IsString(url_item)) {
+        ESP_LOGW(TAG, "OTA: /firmware/latest no trajo version/url validos");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    const esp_app_desc_t *running = esp_app_get_description();
+    if (strcmp(running->version, version_item->valuestring) == 0) {
+        cJSON_Delete(root); // ya estamos en la ultima version, nada que hacer
+        return ESP_OK;
+    }
+
+    /* No aplicar OTA con el OBD conectado: mitad de un viaje real no es
+     * momento de reiniciar el M5 (se corta el gauge, y un viaje en curso
+     * que no llego a checkpoint reciente perderia mas de lo necesario) --
+     * se reintenta solo en la proxima ventana con WiFi, cuando el auto ya
+     * no este conectado. */
+    vehicle_state_t vs;
+    state_store_get(&vs);
+    if (vs.data_valid) {
+        ESP_LOGI(TAG, "OTA: firmware nuevo disponible (%s, actual %s) pero el OBD esta conectado -- se aplica la proxima vez que no lo este",
+                 version_item->valuestring, running->version);
+        cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    char ota_url[256];
+    snprintf(ota_url, sizeof(ota_url), "%s", url_item->valuestring);
+    ESP_LOGW(TAG, "OTA: aplicando firmware %s (actual %s) desde %s ...",
+             version_item->valuestring, running->version, ota_url);
+    cJSON_Delete(root); // liberar antes de la descarga larga, no hace falta mas
+
+    esp_http_client_config_t ota_http_config = {
+        .url = ota_url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 30000, // el binario pesa ~1.5MB, mas margen que un POST chico
+    };
+    esp_https_ota_config_t ota_config = {
+        .http_config = &ota_http_config,
+    };
+    esp_err_t ota_err = esp_https_ota(&ota_config);
+    if (ota_err == ESP_OK) {
+        ESP_LOGW(TAG, "OTA: descarga y escritura exitosas, reiniciando para arrancar la version nueva...");
+        esp_restart(); // no vuelve
+    }
+    ESP_LOGE(TAG, "OTA: fallo (%s) -- se sigue con la version actual, se reintenta la proxima ventana", esp_err_to_name(ota_err));
+    return ota_err;
 }

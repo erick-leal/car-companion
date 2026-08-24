@@ -4,7 +4,19 @@
 # solo usa ~1MB (app) + 28KB (nvs+phy) y deja el resto sin particionar — no
 # hay donde guardar el historial de viajes. Esta tabla reserva una particion
 # FAT dedicada para eso.
+#
+# OTA (24 ago): "factory" (una sola app) no alcanza para actualizar por WiFi
+# -- esp_https_ota necesita al menos dos particiones de app (escribe la
+# nueva mientras la vieja sigue corriendo) mas "otadata" (8KB, registra cual
+# de las dos esta activa). Se le saco el espacio a "storage" (de todos modos
+# muy sobredimensionada para el uso real: unos pocos KB por viaje) -- ojo,
+# cambiar esta tabla reubica la particion de storage en la flash, así que
+# **el historial de viajes local existente se pierde** la primera vez que
+# se reflashea con esta tabla nueva (aceptado a proposito el 24 ago, ver
+# conversacion — no afecta lo que ya esta sincronizado en el backend).
 nvs,      data, nvs,     0x9000,   0x6000,
-phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x200000,
-storage,  data, fat,     0x210000, 0xDF0000,
+otadata,  data, ota,     0xf000,   0x2000,
+phy_init, data, phy,     0x11000,  0x1000,
+ota_0,    app,  ota_0,   0x20000,  0x200000,
+ota_1,    app,  ota_1,   0x220000, 0x200000,
+storage,  data, fat,     0x420000, 0xBE0000,

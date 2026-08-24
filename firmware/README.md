@@ -313,6 +313,52 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## OTA: actualizar firmware por WiFi (24 ago)
+
+Resuelve el ultimo pendiente del "Proximo paso concreto" (punto 10):
+`connectivity_check_ota()` era un stub sin implementar desde el principio.
+
+**Particiones (cambio real, ver `partitions.csv`):** la tabla tenia una
+sola particion de app (`factory`) -- OTA necesita minimo dos (escribe la
+nueva mientras la vieja sigue corriendo) mas `otadata` (8KB, registra cual
+esta activa). Se le saco 2MB+8KB a `storage` (de 14.28MB a 11.88MB --
+segia sobrando de sobra para el uso real). **Cambiar la tabla de
+particiones reubica `storage` en la flash: se pierde el historial de
+viajes local existente la primera vez que se reflashea con esta tabla**
+(decidido con el usuario el 24 ago, aceptado a proposito -- lo que ya
+estaba sincronizado en el backend no se pierde).
+
+**Version del firmware:** `PROJECT_VER` fijado a mano en el
+`CMakeLists.txt` raiz (hoy "0.1.0"). Comparacion por string exacto contra
+lo que devuelve `GET /firmware/latest` -- no hace falta un semver real
+para un proyecto de una sola persona, solo "es igual o no". Hay que
+subirlo a mano en cada release.
+
+**Cuando chequea:** `connectivity_check_ota()` se llama desde
+`attempt_sync_window()`, reusando la misma ventana de WiFi que ya esta
+abierta para el sync de viajes -- no vale la pena prender el radio aparte
+solo para esto. Si hay version nueva pero el OBD esta conectado (viaje en
+curso), se pospone a la proxima ventana en vez de reiniciar el M5 a mitad
+de un viaje real.
+
+**Como publicar una release** (todavia no hay UI/endpoint para esto, se
+inserta a mano en la base de Railway via `railway connect` + psql, ver
+conversacion del 24 ago para como conectar):
+```sql
+INSERT INTO firmware_releases (version, url, sha256, notes) VALUES
+  ('0.2.0', 'https://.../car_companion-0.2.0.bin', 'sha256-del-bin', 'notas');
+```
+El `url` tiene que ser HTTPS publico y alcanzable por el M5 (el cert
+bundle de ESP-IDF ya cubre las CAs comunes). `sha256` se guarda pero
+todavia no se verifica aparte en el firmware -- `esp_https_ota()` ya
+valida la integridad de la imagen antes de arrancarla (checksum propio del
+formato de imagen de ESP-IDF), asi que doblar esa verificacion quedo fuera
+de esta primera version.
+
+Confirmado que compila limpio y genera bien las particiones nuevas. Falta
+probar en hardware real: publicar una release de prueba y confirmar que el
+M5 la detecta, descarga, flashea y reinicia solo.
+
 ## Feedback visual del boton de sync (24 ago)
 
 Pedido real usando el dashboard nuevo: "aprete el boton de sync y deberia
