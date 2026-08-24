@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Car Companion — Viajes</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161c;
+    --card: #1e212b;
+    --border: #2c3040;
+    --text: #e8e9ee;
+    --muted: #8b8fa3;
+    --accent: #5b8cff;
+    --danger: #ff5c5c;
+    --ok: #4cd97b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  input {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    width: 100%;
+  }
+
+  /* --- login --- */
+  #login-view {
+    max-width: 360px;
+    margin: 60px auto;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  #login-view h2 { margin-top: 0; font-size: 16px; }
+  #login-view form { display: flex; flex-direction: column; gap: 12px; }
+  #login-error {
+    color: var(--danger);
+    font-size: 13px;
+    min-height: 18px;
+  }
+
+  /* --- trips --- */
+  #trips-view { display: none; }
+  #status { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+  .trip-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    cursor: pointer;
+  }
+  .trip-card:hover { border-color: var(--accent); }
+  .trip-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .trip-date { font-weight: 600; }
+  .trip-device { color: var(--muted); font-size: 13px; }
+  .trip-stats {
+    display: flex;
+    gap: 18px;
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .trip-stats b { color: var(--text); }
+  .dtc-box {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    display: none;
+  }
+  .dtc-box.open { display: block; }
+  .dtc-code {
+    display: inline-block;
+    background: rgba(255, 92, 92, 0.15);
+    color: var(--danger);
+    border-radius: 6px;
+    padding: 3px 8px;
+    margin: 3px 4px 0 0;
+    font-family: ui-monospace, monospace;
+  }
+  .dtc-ok { color: var(--ok); }
+  .dtc-loading { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Car Companion</h1>
+  <button class="secondary" id="logout-btn" style="display:none">Salir</button>
+</header>
+
+<main>
+  <section id="login-view">
+    <h2>Iniciar sesión</h2>
+    <form id="login-form">
+      <input type="email" id="email" placeholder="Email" autocomplete="username" required>
+      <input type="password" id="password" placeholder="Contraseña" autocomplete="current-password" required>
+      <button type="submit" id="login-btn">Entrar</button>
+      <div id="login-error"></div>
+    </form>
+  </section>
+
+  <section id="trips-view">
+    <div id="status">Cargando viajes...</div>
+    <div id="trips-list"></div>
+  </section>
+</main>
+
+<script>
+const API_BASE = "/api/v1";
+const TOKEN_KEY = "cc_token";
+
+const loginView = document.getElementById("login-view");
+const tripsView = document.getElementById("trips-view");
+const logoutBtn = document.getElementById("logout-btn");
+const loginForm = document.getElementById("login-form");
+const loginError = document.getElementById("login-error");
+const loginBtn = document.getElementById("login-btn");
+const statusEl = document.getElementById("status");
+const tripsList = document.getElementById("trips-list");
+
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+
+function showLogin() {
+  loginView.style.display = "block";
+  tripsView.style.display = "none";
+  logoutBtn.style.display = "none";
+}
+
+function showTrips() {
+  loginView.style.display = "none";
+  tripsView.style.display = "block";
+  logoutBtn.style.display = "inline-block";
+}
+
+/* Llamado autenticado — si el JWT vencio o es invalido (401), vuelve al
+ * login en vez de mostrar una lista vacia confusa. */
+async function authedFetch(path) {
+  const res = await fetch(API_BASE + path, {
+    headers: { Authorization: "Bearer " + getToken() },
+  });
+  if (res.status === 401) {
+    clearToken();
+    showLogin();
+    throw new Error("sesión vencida");
+  }
+  if (!res.ok) throw new Error("error del servidor (" + res.status + ")");
+  return res.json();
+}
+
+function fmtDate(iso) {
+  return new Date(iso).toLocaleString("es-CL", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+function fmtDuration(startIso, endIso) {
+  const mins = Math.round((new Date(endIso) - new Date(startIso)) / 60000);
+  if (mins < 60) return mins + " min";
+  return Math.floor(mins / 60) + "h " + (mins % 60) + "min";
+}
+
+async function loadDtc(tripId, box) {
+  box.innerHTML = '<span class="dtc-loading">Cargando códigos...</span>';
+  try {
+    const codes = await authedFetch("/sync/trips/" + tripId + "/dtc");
+    if (codes.length === 0) {
+      box.innerHTML = '<span class="dtc-ok">Sin fallas registradas en este viaje</span>';
+      return;
+    }
+    box.innerHTML = codes
+      .map((c) => '<span class="dtc-code">' + c.code + "</span>")
+      .join("");
+  } catch (err) {
+    box.innerHTML = '<span class="dtc-loading">No se pudo cargar (' + err.message + ")</span>";
+  }
+}
+
+function renderTrip(trip) {
+  const card = document.createElement("div");
+  card.className = "trip-card";
+
+  const distance = trip.distance_km != null ? trip.distance_km.toFixed(1) + " km" : "—";
+  const consumption = trip.avg_consumption != null ? trip.avg_consumption.toFixed(1) + " L/100km" : "—";
+  const maxRpm = trip.max_rpm != null ? trip.max_rpm : "—";
+
+  card.innerHTML =
+    '<div class="trip-top">' +
+      '<span class="trip-date">' + fmtDate(trip.started_at) + "</span>" +
+      '<span class="trip-device">' + (trip.device_name || "Dispositivo") + "</span>" +
+    "</div>" +
+    '<div class="trip-stats">' +
+      "<span>Duración: <b>" + fmtDuration(trip.started_at, trip.ended_at) + "</b></span>" +
+      "<span>Distancia: <b>" + distance + "</b></span>" +
+      "<span>Consumo: <b>" + consumption + "</b></span>" +
+      "<span>RPM máx: <b>" + maxRpm + "</b></span>" +
+    "</div>" +
+    '<div class="dtc-box"></div>';
+
+  const dtcBox = card.querySelector(".dtc-box");
+  let loaded = false;
+  card.addEventListener("click", () => {
+    const opening = !dtcBox.classList.contains("open");
+    dtcBox.classList.toggle("open");
+    if (opening && !loaded) {
+      loaded = true;
+      loadDtc(trip.id, dtcBox);
+    }
+  });
+
+  return card;
+}
+
+async function loadTrips() {
+  showTrips();
+  statusEl.textContent = "Cargando viajes...";
+  tripsList.innerHTML = "";
+  try {
+    const trips = await authedFetch("/sync/trips");
+    if (trips.length === 0) {
+      statusEl.textContent = "Todavía no hay viajes sincronizados.";
+      return;
+    }
+    statusEl.textContent = trips.length + " viaje(s) — tocá uno para ver sus códigos de falla.";
+    trips.forEach((trip) => tripsList.appendChild(renderTrip(trip)));
+  } catch (err) {
+    if (err.message !== "sesión vencida") {
+      statusEl.textContent = "No se pudo cargar: " + err.message;
+    }
+  }
+}
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginError.textContent = "";
+  loginBtn.disabled = true;
+  try {
+    const res = await fetch(API_BASE + "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("email").value,
+        password: document.getElementById("password").value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "credenciales inválidas");
+    setToken(data.token);
+    loginForm.reset();
+    loadTrips();
+  } catch (err) {
+    loginError.textContent = err.message;
+  } finally {
+    loginBtn.disabled = false;
+  }
+});
+
+logoutBtn.addEventListener("click", () => {
+  clearToken();
+  showLogin();
+});
+
+if (getToken()) {
+  loadTrips();
+} else {
+  showLogin();
+}
+</script>
+
+</body>
+</html>

@@ -1,9 +1,13 @@
 import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { authRouter } from "./routes/auth.js";
 import { devicesRouter } from "./routes/devices.js";
 import { syncRouter } from "./routes/sync.js";
 import { firmwareRouter } from "./routes/firmware.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json());
@@ -13,6 +17,11 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/devices", devicesRouter);
 app.use("/api/v1/sync", syncRouter);
 app.use("/api/v1/firmware", firmwareRouter);
+
+// Dashboard web (24 ago): pagina estatica sin build propio, autenticada con
+// el mismo login/JWT que la API — consume /api/v1/sync/trips directo desde
+// el navegador, mismo origen, sin CORS que configurar.
+app.use("/dashboard", express.static(path.join(__dirname, "../public/dashboard")));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
