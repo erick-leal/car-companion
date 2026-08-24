@@ -80,6 +80,22 @@
   /* --- trips --- */
   #trips-view { display: none; }
   #status { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .chart-title {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  #consumption-chart {
+    display: block;
+    width: 100%;
+  }
   .trip-card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -147,6 +163,10 @@
   </section>
 
   <section id="trips-view">
+    <div id="chart-card" class="chart-card" style="display:none">
+      <div class="chart-title">Consumo por viaje (L/100km)</div>
+      <canvas id="consumption-chart" height="120"></canvas>
+    </div>
     <div id="status">Cargando viajes...</div>
     <div id="trips-list"></div>
   </section>
@@ -262,10 +282,91 @@ function renderTrip(trip) {
   return card;
 }
 
+const chartCard = document.getElementById("chart-card");
+const chartCanvas = document.getElementById("consumption-chart");
+
+/* Linea simple con canvas 2D, sin libreria externa. trips viene en orden
+ * DESC (mas nuevo primero, ver GET /sync/trips) -- se invierte para
+ * dibujar en orden cronologico (izquierda = mas viejo). Solo entran los
+ * viajes con avg_consumption != null (el vehiculo puede no exponer el PID
+ * de caudal, ver docs/api-contract.md). */
+function renderConsumptionChart(trips) {
+  const points = trips
+    .filter((t) => t.avg_consumption != null)
+    .map((t) => Number(t.avg_consumption))
+    .reverse();
+
+  if (points.length < 2) {
+    chartCard.style.display = "none";
+    return;
+  }
+  chartCard.style.display = "block";
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = chartCanvas.clientWidth || chartCanvas.parentElement.clientWidth;
+  const cssHeight = 120;
+  chartCanvas.width = cssWidth * dpr;
+  chartCanvas.height = cssHeight * dpr;
+  chartCanvas.style.height = cssHeight + "px";
+
+  const ctx = chartCanvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const styles = getComputedStyle(document.documentElement);
+  const accent = styles.getPropertyValue("--accent").trim();
+  const muted = styles.getPropertyValue("--muted").trim();
+  const border = styles.getPropertyValue("--border").trim();
+
+  const padL = 34, padR = 8, padT = 10, padB = 18;
+  const plotW = cssWidth - padL - padR;
+  const plotH = cssHeight - padT - padB;
+
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = max - min || 1; // evita division por cero si todos los viajes dieron el mismo consumo
+
+  const xAt = (i) => padL + (i / (points.length - 1)) * plotW;
+  const yAt = (v) => padT + plotH - ((v - min) / range) * plotH;
+
+  // Lineas guia horizontales (min/max) + sus etiquetas
+  ctx.strokeStyle = border;
+  ctx.fillStyle = muted;
+  ctx.font = "11px -apple-system, sans-serif";
+  ctx.textBaseline = "middle";
+  [min, max].forEach((v) => {
+    const y = yAt(v);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(padL + plotW, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(1), 2, y);
+  });
+
+  // La linea de consumo
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((v, i) => {
+    const x = xAt(i), y = yAt(v);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Puntos
+  ctx.fillStyle = accent;
+  points.forEach((v, i) => {
+    ctx.beginPath();
+    ctx.arc(xAt(i), yAt(v), 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
 async function loadTrips() {
   showTrips();
   statusEl.textContent = "Cargando viajes...";
   tripsList.innerHTML = "";
+  chartCard.style.display = "none";
   try {
     const trips = await authedFetch("/sync/trips");
     if (trips.length === 0) {
@@ -273,6 +374,7 @@ async function loadTrips() {
       return;
     }
     statusEl.textContent = trips.length + " viaje(s) — tocá uno para ver sus códigos de falla.";
+    renderConsumptionChart(trips);
     trips.forEach((trip) => tripsList.appendChild(renderTrip(trip)));
   } catch (err) {
     if (err.message !== "sesión vencida") {
