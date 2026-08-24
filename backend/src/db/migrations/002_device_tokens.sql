@@ -1,0 +1,22 @@
+-- 002_device_tokens.sql — token de dispositivo separado del login de usuario
+-- Aplicar con: psql "$DATABASE_URL" -f src/db/migrations/002_device_tokens.sql
+--
+-- Hasta ahora el firmware autenticaba con el email/contraseña REAL del
+-- usuario (guardados en connectivity_secrets.h, en la flash del M5) para
+-- sacar un JWT antes de cada sync. Riesgo real y aceptado a propósito en la
+-- v1 (ver docs/api-contract.md, 23 ago): alguien con acceso físico al M5 y
+-- las herramientas para leer su flash podría extraer esa contraseña.
+--
+-- Este token es propio del dispositivo: de larga duración, revocable sin
+-- tocar la cuenta del usuario (rotar el token no cambia la contraseña), y
+-- el firmware nunca conoce ni el email ni la contraseña real — se genera
+-- una sola vez desde una máquina humana autenticada (ver POST /devices y
+-- POST /devices/:id/token) y se copia tal cual a connectivity_secrets.h.
+--
+-- Se guarda el HASH (sha256), no el token en texto plano — mismo criterio
+-- que password_hash en users, aunque con un hash rápido (no bcrypt): un
+-- token aleatorio de 256 bits de entropía no necesita el costo
+-- computacional de bcrypt, que existe para compensar la baja entropía de
+-- una contraseña elegida por una persona.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS token_hash TEXT;
+CREATE INDEX IF NOT EXISTS idx_devices_token_hash ON devices(token_hash);

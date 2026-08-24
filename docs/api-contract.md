@@ -23,6 +23,12 @@ Lista los dispositivos emparejados del usuario autenticado.
 ### `DELETE /api/v1/devices/:id`
 Desemparejar un dispositivo (ej. se vendió el auto, se cambió de adaptador).
 
+### `POST /api/v1/devices/:id/token` (agregado 24 ago)
+Regenera el token de un dispositivo (auth: JWT de usuario). Devuelve
+`device_token` en texto plano **una sola vez** — el backend solo guarda su
+hash, no se puede volver a mostrar. Invalida cualquier token anterior de
+ese dispositivo de inmediato.
+
 ### `POST /api/v1/sync/trips`
 El firmware sube el historial de viajes acumulado offline.
 
@@ -60,13 +66,18 @@ Códigos de falla (DTC) de un viaje puntual — para la pantalla de diagnóstico
 
 - Modelo de PIDs propietarios por vehículo (para cuando se soporte más de un modelo).
 - Rate limiting de sync.
-- Formato exacto de autenticación del dispositivo (token de larga duración vs. por sesión).
-  **Estado real (23 ago):** el firmware (`connectivity`) usa por ahora login de
-  usuario (email/contraseña hardcodeados en `connectivity_secrets.h`, no
-  versionado) contra `/auth/login` para sacar un JWT fresco antes de cada
-  sync. Es un atajo consciente para v1 — la alternativa prolija (token de
-  dispositivo de larga duración, sin exponer la contraseña real del
-  usuario) queda pendiente.
+- ~~Formato exacto de autenticación del dispositivo~~ — **resuelto el 24
+  ago: token de dispositivo de larga duración**, separado del login del
+  usuario. Migración `002_device_tokens.sql` agrega `devices.token_hash`
+  (se guarda el hash sha256, nunca el token en texto plano). `POST
+  /devices` (login de usuario) genera el token y lo devuelve **una sola
+  vez** en `device_token`; `POST /devices/:id/token` lo regenera si se
+  perdió. `POST /sync/trips` ahora requiere este token (middleware
+  `requireDeviceAuth`), no el JWT de usuario — el firmware (`connectivity`)
+  ya no hace login por HTTP en absoluto, usa `DEVICE_TOKEN` (en
+  `connectivity_secrets.h`, no versionado) directo como Bearer. `GET
+  /sync/trips` y `GET /sync/trips/:id/dtc` siguen con JWT de usuario (son
+  para un humano/futura app, no para el firmware).
 - ~~Unidad de `avg_consumption` sin definir~~ — **definida el 24 ago:
   L/100km** (litros cada 100km — el estándar usado en Chile para consumo de
   combustible, más intuitivo que km/L para un vehículo diesel: menor número

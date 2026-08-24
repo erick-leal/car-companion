@@ -330,8 +330,8 @@ static esp_err_t http_post_json(const char *path, const char *bearer_token, cons
     if (ctx.truncated) {
         /* Bug real encontrado en auditoria (24 ago): antes de este chequeo,
          * una respuesta mas larga que el buffer local se cortaba en
-         * silencio -- el error resultante (ej. cJSON_Parse fallando en
-         * http_login) apuntaba al backend ("la respuesta no es JSON
+         * silencio -- el error resultante (ej. un cJSON_Parse fallando
+         * mas arriba) apuntaba al backend ("la respuesta no es JSON
          * valido") cuando el problema real es que ESTE buffer se quedo
          * corto. Pasa si el backend agrega un campo al payload sin que el
          * firmware se entere. */
@@ -347,71 +347,19 @@ static esp_err_t http_post_json(const char *path, const char *bearer_token, cons
     return ESP_OK;
 }
 
-/* --- Login + registro de dispositivo --- */
-
-static esp_err_t http_login(char *token_out, size_t token_out_size)
-{
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "email", BACKEND_EMAIL);
-    cJSON_AddStringToObject(body, "password", BACKEND_PASSWORD);
-    char *body_str = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (body_str == NULL) return ESP_ERR_NO_MEM;
-
-    char resp[512];
-    esp_err_t err = http_post_json("/api/v1/auth/login", NULL, body_str, resp, sizeof(resp), NULL);
-    free(body_str);
-    if (err != ESP_OK) return err;
-
-    cJSON *parsed = cJSON_Parse(resp);
-    if (parsed == NULL) {
-        ESP_LOGE(TAG, "login: la respuesta no es JSON valido");
-        return ESP_FAIL;
-    }
-    cJSON *token_item = cJSON_GetObjectItem(parsed, "token");
-    if (!cJSON_IsString(token_item)) {
-        ESP_LOGE(TAG, "login: la respuesta no tiene un campo 'token' de texto");
-        cJSON_Delete(parsed);
-        return ESP_FAIL;
-    }
-    size_t token_len = strlen(token_item->valuestring);
-    if (token_len >= token_out_size) {
-        /* No solo cortarlo en silencio: un token JWT truncado da un 401
-         * "invalido" sin ninguna pista de por que (encontrado en auditoria,
-         * 24 ago) -- mejor fallar ahora con la causa clara. */
-        ESP_LOGE(TAG, "login: el token (%u bytes) no entra en el buffer de %u bytes, se descarta en vez de truncarlo",
-                 (unsigned)token_len, (unsigned)token_out_size);
-        cJSON_Delete(parsed);
-        return ESP_FAIL;
-    }
-    strncpy(token_out, token_item->valuestring, token_out_size - 1);
-    token_out[token_out_size - 1] = '\0';
-    cJSON_Delete(parsed);
-    return ESP_OK;
-}
-
-static esp_err_t http_register_device(const char *token)
-{
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "device_uid", s_device_uid);
-    cJSON_AddStringToObject(body, "name", "Car Companion (Maxus T60)");
-    char *body_str = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    if (body_str == NULL) return ESP_ERR_NO_MEM;
-
-    char resp[256];
-    int status = 0;
-    esp_err_t err = http_post_json("/api/v1/devices", token, body_str, resp, sizeof(resp), &status);
-    free(body_str);
-
-    if (err == ESP_OK) return ESP_OK; // nuevo registro o "already_registered", ambos 2xx segun devices.ts
-    if (status == 409) {
-        ESP_LOGE(TAG, "registro de dispositivo: device_uid %s ya pertenece a otra cuenta del backend", s_device_uid);
-    }
-    return err;
-}
-
-/* --- Armado del JSON de viajes + sync real --- */
+/* --- Armado del JSON de viajes + sync real ---
+ *
+ * Ya NO hay login ni registro por HTTP acá (bug de diseño arreglado el
+ * 24 ago): antes, cada intento de sync hacia POST /auth/login con el
+ * email/contraseña REAL del usuario (guardados en connectivity_secrets.h)
+ * para sacar un JWT, y despues POST /devices para confirmar el registro —
+ * dos viajes de red de mas, y la contraseña real de la cuenta viviendo en
+ * la flash del M5. Ahora el firmware usa DEVICE_TOKEN directo como Bearer:
+ * un token propio de este dispositivo (generado una vez desde una maquina
+ * humana autenticada, ver connectivity_secrets.example.h), revocable sin
+ * tocar la cuenta, que nunca fue la contraseña real. El registro del
+ * dispositivo tambien pasa a ser una accion humana (POST /devices con el
+ * JWT del usuario, no algo que el firmware repita solo). */
 
 /* Devuelve false si no se pudo armar/agregar el objeto (tipicamente sin
  * memoria) — el llamador NO debe contar ese viaje como sincronizado en ese
@@ -497,23 +445,10 @@ esp_err_t connectivity_sync_trip_history(void)
 
     char now_str[32];
     format_iso8601(time(NULL), now_str, sizeof(now_str));
-    ESP_LOGI(TAG, "sync: intentando login (hora local del dispositivo: %s, RAM interna libre=%u, bloque contiguo mas grande=%u)",
-             now_str,
+    ESP_LOGI(TAG, "sync: armando %lu viaje(s) (hora local del dispositivo: %s, RAM interna libre=%u, bloque contiguo mas grande=%u)",
+             (unsigned long)pending, now_str,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-
-    char token[512];
-    err = http_login(token, sizeof(token));
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "sync: no se pudo hacer login (%s), reintenta el proximo chequeo", esp_err_to_name(err));
-        return err;
-    }
-
-    err = http_register_device(token);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "sync: no se pudo registrar/confirmar el dispositivo (%s)", esp_err_to_name(err));
-        return err;
-    }
 
     int64_t boot_epoch_s = time(NULL) - (esp_timer_get_time() / 1000000);
 
@@ -547,7 +482,7 @@ esp_err_t connectivity_sync_trip_history(void)
     }
 
     char resp[256];
-    err = http_post_json("/api/v1/sync/trips", token, body_str, resp, sizeof(resp), NULL);
+    err = http_post_json("/api/v1/sync/trips", DEVICE_TOKEN, body_str, resp, sizeof(resp), NULL);
     free(body_str);
 
     if (err == ESP_OK) {

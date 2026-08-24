@@ -20,12 +20,20 @@ que capturar el log serial (ver la última sección) y revisarlo.
    ```bash
    open -e components/connectivity/include/connectivity_secrets.h
    ```
-   Completar `WIFI_SSID`/`WIFI_PASSWORD` (tu WiFi de casa) y
-   `BACKEND_EMAIL`/`BACKEND_PASSWORD` (tu cuenta real del backend). Ese
-   archivo no se sube a git. Si no lo completás, el dispositivo sigue
-   funcionando normal como gauge OBD — solo no va a poder sincronizar
-   viajes (confirmado en hardware: con credenciales de ejemplo, intenta
-   conectar WiFi, falla, reintenta solo, sin crashear nada).
+   Completar `WIFI_SSID`/`WIFI_PASSWORD` (tu WiFi de casa) y `DEVICE_TOKEN`
+   (nuevo, 24 ago — reemplaza al email/contraseña real que se usaba antes).
+   El archivo `connectivity_secrets.example.h` (al lado del que estás
+   editando) trae las 3 instrucciones completas con `curl` para conseguir
+   ese token: primero un login con tu cuenta real (JWT), después
+   `POST /devices` con ese JWT para conseguir/generar el `device_token` de
+   ESTE dispositivo — se muestra **una sola vez**, copiarlo apenas
+   aparezca. Ese archivo no se sube a git. Si no lo completás, el
+   dispositivo sigue funcionando normal como gauge OBD — solo no va a poder
+   sincronizar viajes (confirmado en hardware: con el placeholder, intenta
+   sincronizar y falla el login con 401, sin crashear nada).
+   **Importante:** antes de generar el token hay que aplicar la migración
+   nueva de la base de datos (`cd backend && npm run migrate`) — si no, el
+   backend no tiene dónde guardar `token_hash` todavía.
 1. Con el M5 conectado por USB a la Mac, flashear la última versión:
    ```bash
    source ~/esp/esp-idf/export.sh
@@ -228,30 +236,37 @@ riesgoso y quedó fuera de este cambio a propósito.
 No es una pantalla — pasa solo en segundo plano. Requiere haber completado
 `connectivity_secrets.h` (ver paso 0 de "Antes de salir").
 
-**Confirmado funcionando de punta a punta en hardware real el 24 ago**:
-WiFi conecta, la hora sincroniza por SNTP, login + registro + sync de
-viajes funcionan — verificado consultando el backend directo con `curl`,
-los datos coincidían con lo que mostraba la pantalla de Viaje. Costó cuatro
-bugs reales (RAM/TLS + un bug de fechas), todos arreglados — ver
-`firmware/README.md` para el detalle.
+**Confirmado funcionando de punta a punta en hardware real el 24 ago**
+(con el login viejo, email/contraseña): WiFi conecta, la hora sincroniza
+por SNTP, login + registro + sync de viajes funcionan — verificado
+consultando el backend directo con `curl`, los datos coincidían con lo que
+mostraba la pantalla de Viaje. Costó cuatro bugs reales (RAM/TLS + un bug
+de fechas), todos arreglados — ver `firmware/README.md` para el detalle.
+
+**Cambió el mismo día (24 ago)**: el firmware ya no hace login por HTTP,
+usa `DEVICE_TOKEN` directo — **esto todavía no se probó de punta a punta**
+con un token real (el anterior sí se probó, pero con el mecanismo viejo).
+Antes de generar un viaje real, aplicar la migración de la base
+(`cd backend && npm run migrate`) y completar `DEVICE_TOKEN` en
+`connectivity_secrets.h` (ver paso 0 de "Antes de salir").
 
 - **Mientras manejás** (sin WiFi de casa cerca): no debería pasar nada
   visible, ni logs de error repetidos por WiFi — eso es lo esperado, el
   dispositivo sigue funcionando como gauge normal.
 - **Al volver a casa**, con el M5 todavía prendido y cerca del WiFi: en el
   log serial (ver sección 8 para cómo capturarlo) buscar:
-  - `connectivity: WiFi conectado (IP obtenida), sincronizando hora por SNTP...`
+  - `connectivity: prendiendo WiFi para intentar sincronizar (...)` — el
+    radio se prende solo cuando hay algo pendiente (ver sección 5.5).
   - `connectivity: hora sincronizada por SNTP: <fecha>` — confirma que el
     reloj del dispositivo es correcto (necesario para el handshake TLS y
     para que la fecha de cada viaje quede bien en el backend).
   - `connectivity: sync: N viaje(s) sincronizados con el backend` — esto
-    confirma que el login, el registro del dispositivo, y el POST de
-    viajes funcionaron de punta a punta.
-  - Si en cambio aparece `connectivity: sync: no se pudo hacer login...`
-    revisar el mensaje: si dice "la contraseña debe tener al menos 8
-    caracteres", corregir `BACKEND_PASSWORD` en `connectivity_secrets.h`;
-    si dice "credenciales inválidas", revisar `BACKEND_EMAIL`/
-    `BACKEND_PASSWORD` contra tu cuenta real.
+    confirma que el POST de viajes con el `DEVICE_TOKEN` funcionó de punta
+    a punta.
+  - Si en cambio aparece `HTTP POST /api/v1/sync/trips devolvio status
+    401`, el token en `connectivity_secrets.h` no coincide con el guardado
+    en el backend — revisar que lo copiaste bien, o generar uno nuevo con
+    `POST /devices/:id/token` (ver `connectivity_secrets.example.h`).
 - **Ojo con las fechas**: un viaje que se graba y se sincroniza en el mismo
   arranque del M5 (lo normal de acá en adelante) va a tener la fecha real
   correcta en el backend. Si el M5 se reinicia entre que el viaje pasa y
@@ -362,7 +377,10 @@ captura serial de la sección 7. Todos con tag `pid_engine`:
       típicamente se resetea por la baja de tensión), el dashboard pasa por
       "SIN OBD" y vuelve solo a "OBD OK" — no debería quedar pegado
       mostrando datos viejos como si siguieran en vivo.
-- [x] Sync con el backend: confirmado funcionando de punta a punta en
-      hardware real el 24 ago (login, registro, sync de viajes, y fechas
-      correctas). Falta seguir viendo que cada viaje real nuevo se
-      sincronice bien de acá en adelante, en manejadas normales.
+- [x] Sync con el backend (mecanismo viejo, login por HTTP): confirmado
+      funcionando de punta a punta en hardware real el 24 ago.
+- [ ] Sync con `DEVICE_TOKEN` (mecanismo nuevo, mismo día): aplicar la
+      migración (`npm run migrate`), generar el token real (ver
+      `connectivity_secrets.example.h`), completar
+      `connectivity_secrets.h`, y confirmar en el log que sincroniza sin
+      401 — todavía no se probó de punta a punta con este mecanismo.

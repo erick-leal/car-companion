@@ -313,6 +313,61 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Token de dispositivo separado del login del usuario (24 ago)
+
+Resuelto el TODO que quedó documentado desde que se armó `connectivity`
+(23 ago): hasta ahora el firmware guardaba el email/contraseña **real** del
+usuario en `connectivity_secrets.h` y hacía login por HTTP antes de cada
+intento de sync — funcionaba, pero un dispositivo desarmado con acceso a su
+flash exponía la contraseña real de la cuenta.
+
+**Backend** (`backend/src/`): migración `002_device_tokens.sql` agrega
+`devices.token_hash` (se guarda el hash sha256 del token, nunca el texto
+plano — igual criterio que `password_hash` en `users`, pero con un hash
+rápido en vez de bcrypt porque un token aleatorio de 256 bits no necesita
+el costo computacional pensado para contraseñas de baja entropía elegidas
+por una persona). `POST /devices` ahora genera el token al registrar (o al
+confirmar un dispositivo viejo sin token todavía) y lo devuelve en
+`device_token` — **una sola vez**, el backend no puede volver a mostrarlo.
+`POST /devices/:id/token` (nuevo) lo regenera si se perdió. `POST
+/sync/trips` cambió de `requireAuth` (JWT de usuario) a un middleware nuevo,
+`requireDeviceAuth`, que resuelve el dispositivo directo por el hash del
+token — ya no necesita el `device_uid` del body para autorizar (queda en el
+payload por compatibilidad/log, no para autorización). `GET /sync/trips` y
+`GET /sync/trips/:id/dtc` siguen con JWT de usuario (son para un humano,
+no para el firmware).
+
+**Firmware** (`connectivity.c`): se eliminaron `http_login()` y
+`http_register_device()` enteras — el firmware ya no hace login por HTTP en
+absoluto. `connectivity_sync_trip_history()` usa `DEVICE_TOKEN` (nuevo en
+`connectivity_secrets.h`, reemplaza a `BACKEND_EMAIL`/`BACKEND_PASSWORD`)
+directo como Bearer para el POST de sync. Efecto secundario bueno: una
+ventana de sync ahora hace **un solo** llamado HTTP en vez de tres (antes:
+login + registro + POST de viajes), menos tiempo con el radio WiFi
+prendido = menos batería por ventana de sync.
+
+**El registro del dispositivo pasa a ser una acción humana**, no algo que
+el firmware repita solo: se hace una vez con `curl` desde la máquina del
+usuario (autenticada con su login real), con las instrucciones completas en
+`connectivity_secrets.example.h`.
+
+**No pude confirmar que el backend compila** — no hay Node.js instalado en
+este entorno para correr `tsc`/`npm run build`. Revisado línea por línea a
+mano siguiendo los mismos patrones que ya usaba el resto del backend
+(mismo estilo de middleware, mismos tipos), pero falta correr `npm run
+build` (o `npm run test`) antes de desplegar, y aplicar la migración nueva
+contra la base de Railway (`npm run migrate`, ahora corre `001_init.sql` +
+`002_device_tokens.sql` en secuencia) antes de que el firmware con el
+nuevo `DEVICE_TOKEN` intente sincronizar — si no, el token no va a existir
+todavía en la tabla y el backend va a rechazar todo con 401.
+
+**Falta que Erick genere su `DEVICE_TOKEN` real** (instrucciones paso a
+paso en `connectivity_secrets.example.h`: login con su cuenta real → `POST
+/devices` con ese JWT → copiar `device_token` de la respuesta) y lo pegue
+en `connectivity_secrets.h`. Mientras tanto el placeholder actual hace que
+la sync falle el login con 401 — el dispositivo sigue funcionando
+normal como gauge standalone, no es un crash.
+
 ## `avg_consumption` definido y calculado (24 ago)
 
 Quedaba pendiente desde que se armó `connectivity` (ver

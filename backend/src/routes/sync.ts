@@ -1,26 +1,24 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { requireAuth, requireDeviceAuth, type AuthedRequest, type AuthedDeviceRequest } from "../middleware/auth.js";
 import { syncPayloadSchema } from "../validation.js";
 
 export const syncRouter = Router();
-syncRouter.use(requireAuth);
 
-syncRouter.post("/trips", async (req: AuthedRequest, res) => {
+/**
+ * El firmware sube su historial de viajes autenticado con su propio token
+ * de dispositivo (requireDeviceAuth, ver 002_device_tokens.sql) — no con el
+ * login del usuario. `device_uid` sigue en el payload por compatibilidad y
+ * como dato informativo, pero ya no se usa para resolver a qué dispositivo
+ * pertenece: eso lo determina el token en sí.
+ */
+syncRouter.post("/trips", requireDeviceAuth, async (req: AuthedDeviceRequest, res) => {
   const parsed = syncPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const { device_uid, trips } = parsed.data;
-
-  const deviceResult = await pool.query(
-    "SELECT id FROM devices WHERE device_uid = $1 AND user_id = $2",
-    [device_uid, req.userId]
-  );
-  if (deviceResult.rowCount === 0) {
-    return res.status(404).json({ error: "dispositivo no encontrado o no pertenece a este usuario" });
-  }
-  const deviceId = deviceResult.rows[0].id;
+  const { trips } = parsed.data;
+  const deviceId = req.deviceId as number;
 
   const client = await pool.connect();
   const insertedIds: number[] = [];
@@ -62,8 +60,8 @@ syncRouter.post("/trips", async (req: AuthedRequest, res) => {
   return res.status(201).json({ synced_trip_ids: insertedIds });
 });
 
-/** Historial de viajes del usuario (para la futura app móvil / dashboard). */
-syncRouter.get("/trips", async (req: AuthedRequest, res) => {
+/** Historial de viajes del usuario (para la futura app móvil / dashboard) — login de usuario, no token de dispositivo. */
+syncRouter.get("/trips", requireAuth, async (req: AuthedRequest, res) => {
   const result = await pool.query(
     `SELECT t.id, t.started_at, t.ended_at, t.distance_km, t.avg_consumption, t.max_rpm,
             d.name AS device_name
@@ -77,8 +75,8 @@ syncRouter.get("/trips", async (req: AuthedRequest, res) => {
   return res.json(result.rows);
 });
 
-/** Códigos DTC de un viaje puntual (para la pantalla de diagnóstico). */
-syncRouter.get("/trips/:id/dtc", async (req: AuthedRequest, res) => {
+/** Códigos DTC de un viaje puntual (para la pantalla de diagnóstico) — login de usuario. */
+syncRouter.get("/trips/:id/dtc", requireAuth, async (req: AuthedRequest, res) => {
   const result = await pool.query(
     `SELECT dc.code, dc.description, dc.created_at
      FROM dtc_codes dc
