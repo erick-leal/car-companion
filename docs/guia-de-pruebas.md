@@ -201,13 +201,27 @@ Menú → **Mantenimiento**.
 
 Con el M5 prendido, sin conectar ni al auto ni al WiFi de casa (el caso que
 más importa: la mayor parte del tiempo que el dispositivo pasa prendido), se
-midió ~5% de batería gastado en 10 minutos antes de este fix. Causa: el
-escaneo BLE quedaba al 100% de duty cycle para siempre. Ya arreglado (ver
-`firmware/README.md`), pero **falta confirmar el número real** — repetir la
-misma prueba (prender el M5 sin conectar a nada, dejarlo 10 min, ver cuánto
-bajó la batería) y comparar contra el ~5%/10min de antes. Si sigue siendo
-alto, avisar — el siguiente sospechoso (`CONFIG_PM_ENABLE`, light-sleep del
-CPU) es más riesgoso y quedó fuera de este cambio a propósito.
+midió ~5% de batería gastado en 10 minutos antes de este fix. Dos causas
+arregladas: el escaneo BLE quedaba al 100% de duty cycle para siempre, y el
+radio WiFi quedaba siempre prendido reintentando conectar. Ahora el WiFi
+está **apagado por default** y solo se prende por ventanas cortas (~20s)
+cada ~12 minutos si hay algo pendiente de sincronizar, o al tocar el botón
+de sync — confirmado en hardware que con 0 viajes pendientes, el radio WiFi
+directamente no se prende al arrancar.
+
+**Falta confirmar en el auto real:**
+- Repetir la prueba de batería (M5 prendido sin conectar a nada, 10 min,
+  ver cuánto bajó) y comparar contra el ~5%/10min original.
+- Generar un viaje real (>5min) y confirmar que, pasados los ~12 minutos
+  del ciclo automático, el log muestra `prendiendo WiFi para intentar
+  sincronizar` y después `sync: N viaje(s) sincronizados` — el ciclo
+  automático con radio apagado/prendido no se probó todavía end-to-end.
+- Confirmar que el botón de sync manual en Viaje sigue funcionando igual
+  que antes (prende el radio al toque, sincroniza, apaga el radio).
+
+Si el consumo sigue siendo alto después de este cambio, avisar — el
+siguiente sospechoso (`CONFIG_PM_ENABLE`, light-sleep del CPU) es más
+riesgoso y quedó fuera de este cambio a propósito.
 
 ## 6. Sincronización con el backend (nuevo, 23 ago)
 

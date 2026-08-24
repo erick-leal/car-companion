@@ -22,12 +22,18 @@
 
 static const char *TAG = "connectivity";
 
-/* Cada cuanto la tarea de fondo revisa si hay algo para sincronizar. Barato
- * de chequear seguido: si no hay WiFi conectado o no hay viajes pendientes,
- * connectivity_sync_trip_history() vuelve al toque sin ningun llamado de
- * red — el costo real (login + POST) solo se paga cuando de verdad hace
- * falta. */
-#define SYNC_CHECK_INTERVAL_MS (30 * 1000)
+/* Cada cuanto la tarea de fondo intenta sincronizar (si hay algo pendiente).
+ * Elegido con el usuario el 24 ago, despues de medir ~5% de bateria del M5
+ * gastado en menos de 10 minutos prendido sin conectar a nada: en vez de
+ * dejar el radio WiFi siempre activo esperando reconectar, se prende solo
+ * por una ventana acotada cada este intervalo (o al tocar el boton de sync
+ * en Viaje) y se apaga apenas termina el intento. Ver attempt_sync_window(). */
+#define SYNC_CHECK_INTERVAL_MS (12 * 60 * 1000)
+
+/* Maximo tiempo con el radio WiFi prendido por intento, conectado o no —
+ * si el WiFi de casa no aparece en esta ventana, se apaga igual y se
+ * reintenta en el proximo ciclo. */
+#define WIFI_CONNECT_WINDOW_MS (20 * 1000)
 
 /* Maximo de viajes por POST — evita un cuerpo JSON gigante de una sola vez
  * si el dispositivo estuvo semanas sin pasar cerca del WiFi de casa. Se van
@@ -127,7 +133,10 @@ static void init_device_uid(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-static esp_err_t wifi_and_sntp_start(void)
+/* Solo inicializa el stack de WiFi (driver, netif, handlers, SNTP) — NO
+ * prende el radio (eso es wifi_radio_start(), llamado a demanda por cada
+ * ventana de sync). Se llama una sola vez, en connectivity_init(). */
+static esp_err_t wifi_init_once(void)
 {
     esp_err_t err = nvs_flash_init(); // WiFi necesita NVS para calibracion; idempotente si obd_driver ya lo inicializo
     /* Nada de ESP_ERROR_CHECK en esta funcion a proposito: eso llama a
@@ -192,23 +201,11 @@ static esp_err_t wifi_and_sntp_start(void)
     };
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-    if (err == ESP_OK) err = esp_wifi_start();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "no se pudo arrancar WiFi STA: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "no se pudo configurar WiFi STA: %s", esp_err_to_name(err));
         return err;
     }
-
-    /* BUG DE BATERIA REAL ENCONTRADO EN USO (24 ago): sin esto, el radio de
-     * WiFi queda siempre activo (WIFI_PS_NONE, el default cuando
-     * CONFIG_PM_ENABLE esta apagado) — sea que este conectado a la red de
-     * casa, o reintentando conectar en loop la mayor parte del tiempo real
-     * de uso (manejando, sin WiFi cerca). WIFI_PS_MIN_MODEM deja que el
-     * radio duerma entre balizas del punto de acceso (se despierta solo
-     * para escuchar el DTIM) — el unico costo real es un poco mas de
-     * latencia en la sync, que ya es un proceso de fondo sin apuro. No se
-     * chequea el rc: si falla, WiFi sigue funcionando en el modo anterior,
-     * no es motivo para cortar el arranque. */
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    // NO esp_wifi_start() aca -- eso lo hace wifi_radio_start() a demanda, ver mas abajo
 
     /* wait_for_sync=false: no bloquear el arranque esperando la hora. La
      * tarea de fondo de sync ya chequea time_is_valid() antes de usarla.
@@ -219,11 +216,43 @@ static esp_err_t wifi_and_sntp_start(void)
     sntp_cfg.sync_cb = &on_sntp_time_synced;
     err = esp_netif_sntp_init(&sntp_cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_netif_sntp_init fallo: %s (WiFi sigue andando, pero sin hora real no se puede armar started_at/ended_at para sync)", esp_err_to_name(err));
-        // no return: WiFi ya arranco bien, vale la pena seguir aunque SNTP haya fallado
+        ESP_LOGE(TAG, "esp_netif_sntp_init fallo: %s (sin hora real no se puede armar started_at/ended_at para sync)", esp_err_to_name(err));
+        // no return: el resto de WiFi quedo bien configurado, vale la pena seguir aunque SNTP haya fallado
     }
 
     return ESP_OK;
+}
+
+/* Prende el radio WiFi para un intento de sync (ver attempt_sync_window).
+ * esp_wifi_start() dispara WIFI_EVENT_STA_START -> esp_wifi_connect()
+ * automatico via wifi_event_handler. */
+static void wifi_radio_start(void)
+{
+    esp_err_t err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_start fallo (%s), no se pudo prender el radio para este intento de sync", esp_err_to_name(err));
+        return;
+    }
+    /* BUG DE BATERIA REAL ENCONTRADO EN USO (24 ago): sin esto, mientras el
+     * radio esta prendido queda en WIFI_PS_NONE (siempre activo al 100%,
+     * el default cuando CONFIG_PM_ENABLE esta apagado). WIFI_PS_MIN_MODEM
+     * deja que duerma entre balizas del punto de acceso una vez conectado
+     * — el unico costo real es un poco mas de latencia, que no importa acá
+     * (proceso de fondo sin apuro). Se re-aplica cada vez que se prende el
+     * radio (no se sabe con certeza si el modo persiste entre un
+     * esp_wifi_stop()/esp_wifi_start(), mejor no asumir). No se chequea el
+     * rc: si falla, WiFi sigue andando en el modo anterior, no amerita
+     * cortar el intento de sync por esto. */
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+}
+
+/* Apaga el radio WiFi al terminar un intento de sync (exitoso o no). */
+static void wifi_radio_stop(void)
+{
+    esp_timer_stop(s_reconnect_timer); // cancela cualquier reintento de backoff que hubiera quedado pendiente
+    esp_wifi_stop();
+    s_wifi_connected = false;
+    s_reconnect_backoff_s = 1; // arrancar fresco la proxima ventana, no arrastrar el backoff de esta
 }
 
 /* --- Cliente HTTP: POST JSON con Bearer opcional, junta la respuesta en un
@@ -519,11 +548,49 @@ esp_err_t connectivity_sync_trip_history(void)
 
 /* --- Tarea de fondo --- */
 
-/* El loop principal revisa cada SYNC_CHECK_INTERVAL_MS (30s), pero tambien
+/* Prende el radio WiFi, espera hasta WIFI_CONNECT_WINDOW_MS a que conecte, y
+ * si conecta intenta sincronizar — apaga el radio al final pase lo que
+ * pase (conectó o no, sincronizó bien o no). No prende el radio para nada
+ * si no hay ningun viaje pendiente: ese chequeo es local, no necesita red. */
+static void attempt_sync_window(void)
+{
+    uint32_t pending;
+    if (storage_get_pending_sync_count(&pending) != ESP_OK || pending == 0) {
+        return; // nada para sincronizar, no vale la pena gastar bateria prendiendo el radio
+    }
+
+    ESP_LOGI(TAG, "prendiendo WiFi para intentar sincronizar (%lu viaje(s) pendiente(s))...", (unsigned long)pending);
+    wifi_radio_start();
+
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)WIFI_CONNECT_WINDOW_MS * 1000;
+    while (!s_wifi_connected && esp_timer_get_time() < deadline_us) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
+
+    if (s_wifi_connected) {
+        /* time_is_valid() puede seguir en false un instante despues de
+         * conectar (SNTP todavia no completo su primer request) — un poco
+         * de margen extra acá antes de darlo por perdido en esta ventana. */
+        int64_t sntp_deadline_us = esp_timer_get_time() + 5LL * 1000000;
+        while (!time_is_valid() && esp_timer_get_time() < sntp_deadline_us) {
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+        esp_err_t err = connectivity_sync_trip_history();
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "sync: WiFi conecto pero la hora SNTP no llego a tiempo, se reintenta la proxima ventana");
+        }
+    } else {
+        ESP_LOGI(TAG, "no se encontro el WiFi de casa en %ds, apagando el radio hasta el proximo intento",
+                 WIFI_CONNECT_WINDOW_MS / 1000);
+    }
+
+    wifi_radio_stop();
+}
+
+/* El loop principal revisa cada SYNC_CHECK_INTERVAL_MS, pero tambien
  * consulta el buzon de "sincronizar ahora" (boton manual en la pantalla de
- * Viaje) cada 1s — asi un toque del usuario no tiene que esperar hasta 30s
- * para que se note. Consultar el buzon cada 1s es gratis (un booleano), el
- * costo real (login+POST) solo se paga cuando de verdad corresponde. */
+ * Viaje) cada 1s — asi un toque del usuario no tiene que esperar hasta el
+ * proximo ciclo automatico para que se note. */
 static void connectivity_task(void *arg)
 {
     (void)arg;
@@ -534,16 +601,8 @@ static void connectivity_task(void *arg)
         bool periodic_due = (now - last_periodic_check_us) >= (int64_t)SYNC_CHECK_INTERVAL_MS * 1000;
 
         if (manual_requested || periodic_due) {
-            esp_err_t sync_err = connectivity_sync_trip_history(); // no-op instantaneo y gratis si no hay WiFi o no hay nada pendiente
-            /* Si devolvio ESP_ERR_INVALID_STATE (sin WiFi o sin hora SNTP
-             * todavia — visto en hardware real el 23 ago: SNTP tardo ~33s,
-             * mas que el intervalo de 30s), NO actualizamos el timer: el
-             * proximo tick de 1s vuelve a intentar en vez de esperar otros
-             * 30s completos de mas por "gastar" el turno en algo que ni
-             * siquiera llego a intentar la red. */
-            if (sync_err != ESP_ERR_INVALID_STATE) {
-                last_periodic_check_us = now;
-            }
+            attempt_sync_window();
+            last_periodic_check_us = esp_timer_get_time();
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -553,9 +612,9 @@ esp_err_t connectivity_init(void)
 {
     init_device_uid();
 
-    esp_err_t err = wifi_and_sntp_start();
+    esp_err_t err = wifi_init_once();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "no se pudo arrancar WiFi/SNTP (%s) — el dispositivo sigue funcionando standalone", esp_err_to_name(err));
+        ESP_LOGE(TAG, "no se pudo inicializar WiFi/SNTP (%s) — el dispositivo sigue funcionando standalone", esp_err_to_name(err));
         return err;
     }
 

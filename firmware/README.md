@@ -336,9 +336,26 @@ encontradas:
   balizas del punto de acceso), único costo real: algo más de latencia en la
   sync, que ya corre en segundo plano sin apuro.
 
-**No confirmado todavía en hardware** (el M5 no estaba conectado por USB al
-momento de este cambio) — falta reflashear y volver a medir cuánta batería
-baja en 10 minutos en las mismas condiciones, para confirmar la mejora real.
+**Rediseño más grande, decidido con el usuario (24 ago)**: el radio WiFi
+ahora queda **apagado por default**, no solo con ahorro de energía. Antes,
+`connectivity_init()` prendía WiFi al arrancar y lo dejaba activo para
+siempre (reintentando conectar todo el tiempo que no hay WiFi de casa
+cerca, que es la mayoría del uso real). Ahora `wifi_init_once()` solo
+configura el stack de WiFi sin prender el radio; una tarea de fondo
+(`attempt_sync_window()`) lo prende por una ventana acotada
+(`WIFI_CONNECT_WINDOW_MS`, 20s) cada `SYNC_CHECK_INTERVAL_MS` (~12min)
+**solo si hay algún viaje pendiente de sincronizar** (chequeo local,
+`storage_get_pending_sync_count()`, no necesita el radio prendido), o al
+tocar el botón de sync en Viaje — y lo apaga de nuevo al terminar el
+intento, haya conectado o no. Confirmado en hardware: con 0 viajes
+pendientes, el radio WiFi ni siquiera se prende al arrancar (antes, cada
+boot mostraba `wifi:mode : sta` y `connected with ...` de entrada; ahora
+esas líneas no aparecen para nada).
+
+**Falta confirmar en el auto real**: (1) que el ciclo automático de ~12min
+efectivamente prenda el radio cuando hay un viaje real pendiente y lo
+sincronice bien; (2) volver a medir cuánta batería baja en 10 minutos sin
+conectar a nada, para comparar contra el ~5%/10min original.
 
 **Quedó afuera a propósito, por ser más riesgoso**: habilitar
 `CONFIG_PM_ENABLE` + tickless idle dejaría que el CPU baje de frecuencia o
