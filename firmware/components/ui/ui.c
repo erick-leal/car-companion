@@ -85,6 +85,8 @@ static lv_obj_t *s_lbl_m5batt;
 static lv_obj_t *s_lbl_dtc_body;
 static lv_obj_t *s_lbl_trip_header;
 static lv_obj_t *s_lbl_trip_body;
+static lv_obj_t *s_lbl_sync_status;
+static sync_status_t s_last_shown_sync_status = (sync_status_t)-1; // fuerza el primer redibujo
 static uint32_t  s_trip_total;
 static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
 static lv_obj_t *s_lbl_diag_body;
@@ -100,6 +102,7 @@ static lv_obj_t *s_lbl_maint_odometer;
 static bool s_dashboard_active;
 static bool s_dtc_screen_active;
 static bool s_diag_screen_active;
+static bool s_trip_screen_active;
 static bool s_subscribed;
 
 /* Las funciones build_* asumen que el lock de LVGL YA esta tomado: se llaman
@@ -342,6 +345,7 @@ static void build_main_screen(void)
     s_dashboard_active = true;
     s_dtc_screen_active = false;
     s_diag_screen_active = false;
+    s_trip_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -498,6 +502,7 @@ static void build_dtc_screen(void)
     s_dashboard_active = false;
     s_dtc_screen_active = true;
     s_diag_screen_active = false;
+    s_trip_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -568,6 +573,7 @@ static void build_diag_screen(void)
     s_dashboard_active = false;
     s_dtc_screen_active = false;
     s_diag_screen_active = true;
+    s_trip_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -681,10 +687,11 @@ static void trip_next_event_cb(lv_event_t *e)
 static void sync_now_event_cb(lv_event_t *e)
 {
     (void)e;
-    /* Fire-and-forget: connectivity ya sincroniza solo en segundo plano cada
-     * 30s, esto solo pide que el proximo intento sea ya (ver
-     * connectivity_task). No hay feedback visual todavia (exito/error) —
-     * si hace falta, revisar el log serial (ver docs/guia-de-pruebas.md). */
+    /* connectivity ya sincroniza solo en segundo plano cada 30s, esto solo
+     * pide que el proximo intento sea ya (ver connectivity_task). El
+     * resultado real (exito/sin WiFi/error) se ve en s_lbl_sync_status,
+     * actualizado por lvgl_tick_task via state_store_get_sync_status(). */
+    state_store_set_sync_status(SYNC_STATUS_IN_PROGRESS); // feedback inmediato, antes de que connectivity_task lo levante del buzon (hasta 1s)
     state_store_request_sync();
 }
 
@@ -695,6 +702,7 @@ static void build_trip_screen(void)
     s_dashboard_active = false;
     s_dtc_screen_active = false;
     s_diag_screen_active = false;
+    s_trip_screen_active = true;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -714,6 +722,18 @@ static void build_trip_screen(void)
     lv_obj_set_style_text_color(sync_lbl, COL_ACCENT, 0);
     lv_label_set_text(sync_lbl, LV_SYMBOL_REFRESH);
     lv_obj_center(sync_lbl);
+
+    /* Feedback real del ultimo intento de sync (pedido del 24 ago: el boton
+     * no decia nada, ni exito ni error). lvgl_tick_task la redibuja cada
+     * ~1s mientras esta pantalla esta activa, leyendo
+     * state_store_get_sync_status() -- ver esa funcion mas abajo. */
+    s_lbl_sync_status = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_lbl_sync_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(s_lbl_sync_status, 130);
+    lv_obj_set_style_text_align(s_lbl_sync_status, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(s_lbl_sync_status, LV_ALIGN_TOP_RIGHT, -4, 32);
+    lv_label_set_text(s_lbl_sync_status, "");
+    s_last_shown_sync_status = (sync_status_t)-1; // fuerza el redibujo aunque el estado no haya cambiado
 
     s_lbl_trip_header = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_trip_header, &lv_font_montserrat_14, 0);
@@ -991,6 +1011,7 @@ static void build_maint_screen(void)
     s_dashboard_active = false;
     s_dtc_screen_active = false;
     s_diag_screen_active = false;
+    s_trip_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -1094,6 +1115,7 @@ static void build_menu_screen(void)
     s_dashboard_active = false;
     s_dtc_screen_active = false;
     s_diag_screen_active = false;
+    s_trip_screen_active = false;
     lv_obj_set_style_bg_color(scr, COL_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -1252,6 +1274,29 @@ static void lvgl_tick_task(void *arg)
                     lv_obj_set_style_text_color(s_lbl_m5batt,
                                                  pct < 15 ? COL_DANGER :
                                                  pct < 30 ? COL_WARN : COL_CAPTION, 0);
+                }
+            }
+            /* Feedback del boton de sync (pedido del 24 ago): sync_status no
+             * notifica suscriptores a proposito (no es estado del vehiculo,
+             * ver state_store.h), asi que ui lo consulta con polling propio
+             * cada ~200ms mientras la pantalla de Viaje esta activa — solo
+             * redibuja si cambio desde la ultima vez, no en cada vuelta. */
+            if (s_trip_screen_active && (iter % 20) == 0) {
+                sync_status_t status = state_store_get_sync_status();
+                if (status != s_last_shown_sync_status) {
+                    s_last_shown_sync_status = status;
+                    lv_color_t color = COL_CAPTION;
+                    const char *text = "";
+                    switch (status) {
+                        case SYNC_STATUS_IDLE:              text = ""; break;
+                        case SYNC_STATUS_IN_PROGRESS:       text = "Sincronizando..."; color = COL_ACCENT; break;
+                        case SYNC_STATUS_NOTHING_PENDING:   text = "Nada pendiente"; color = COL_CAPTION; break;
+                        case SYNC_STATUS_OK:                text = LV_SYMBOL_OK " Sincronizado"; color = COL_VALUE; break;
+                        case SYNC_STATUS_NO_WIFI:           text = "Sin WiFi de casa"; color = COL_WARN; break;
+                        case SYNC_STATUS_ERROR:             text = LV_SYMBOL_WARNING " Error de sync"; color = COL_DANGER; break;
+                    }
+                    lv_label_set_text(s_lbl_sync_status, text);
+                    lv_obj_set_style_text_color(s_lbl_sync_status, color, 0);
                 }
             }
             lv_timer_handler();

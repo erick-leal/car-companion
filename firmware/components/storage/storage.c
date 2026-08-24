@@ -137,6 +137,13 @@ static void save_maintenance(void)
  * de un POST exitoso de connectivity). */
 static uint32_t s_synced_trip_count;
 
+/* Cuantos viajes ya habia en trips.bin al arrancar -- storage_backfill_
+ * recorded_at_epoch_s() solo toca indices >= esto, para no tocar viajes de
+ * arranques anteriores (su start_time_s no significa nada en este
+ * arranque, ver comentario en storage.h). Fijado una sola vez en
+ * storage_init(). */
+static uint32_t s_trip_count_at_boot;
+
 static void load_sync_state(void)
 {
     FILE *f = fopen(SYNC_FILE, "rb");
@@ -467,10 +474,36 @@ esp_err_t storage_init(void)
     load_maintenance();
     recover_checkpoint_if_any();
     load_sync_state();
-    state_store_subscribe(on_state_change, NULL);
 
+    /* Bug real encontrado en el auto (24 ago): el cursor de sync (sync.bin)
+     * y trips.bin son archivos independientes -- si trips.bin se reinicia
+     * por algun motivo (ver migrate_trips_file_if_needed, o simplemente se
+     * borra a mano) sin que sync.bin se entere, el cursor queda "adelantado"
+     * respecto al archivo nuevo. Como pending = total - sincronizados, un
+     * cursor mayor al total real hace que CUALQUIER viaje nuevo se vea como
+     * "ya sincronizado" sin haberse mandado nunca -- exactamente lo que le
+     * paso a Erick: el primer viaje real quedo invisible para connectivity,
+     * "Nada pendiente" en pantalla, nunca llego un POST al backend (visto
+     * en los logs HTTP de Railway). Invariante real: el cursor nunca puede
+     * ser mayor al total de viajes guardados, asi que si lo es, es la señal
+     * inequivoca de este desincronismo -- se reinicia a 0 (fuerza un
+     * resync de los viajes actuales; peor caso duplicar algo que si se
+     * habia mandado antes del reinicio del archivo, mejor que perder datos
+     * reales en silencio para siempre). */
     uint32_t count = 0;
     storage_get_trip_count(&count);
+    if (s_synced_trip_count > count) {
+        ESP_LOGW(TAG, "cursor de sync (%lu) mayor que los viajes guardados (%lu) -- "
+                      "trips.bin se debe haber reiniciado sin resetear sync.bin, "
+                      "reiniciando el cursor a 0",
+                 (unsigned long)s_synced_trip_count, (unsigned long)count);
+        s_synced_trip_count = 0;
+        save_sync_state();
+    }
+
+    s_trip_count_at_boot = count;
+    state_store_subscribe(on_state_change, NULL);
+
     ESP_LOGI(TAG, "storage_init OK (%s montado, %lu viajes guardados, %lu sin sincronizar, odometro %.1fkm)",
              MOUNT_POINT, (unsigned long)count,
              (unsigned long)(count > s_synced_trip_count ? count - s_synced_trip_count : 0),
@@ -586,5 +619,48 @@ esp_err_t storage_adjust_filter_km_remaining(float delta_km)
     s_maint.filter_km_remaining += delta_km;
     save_maintenance();
     storage_unlock();
+    return ESP_OK;
+}
+
+esp_err_t storage_backfill_recorded_at_epoch(void)
+{
+    int64_t wall_clock_offset_s;
+    if (!state_store_get_wall_clock_offset(&wall_clock_offset_s)) {
+        return ESP_ERR_INVALID_STATE; // SNTP todavia no sincronizo, nada que completar
+    }
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
+
+    uint32_t total;
+    get_trip_count_locked(&total);
+
+    FILE *f = fopen(TRIPS_FILE, "r+b"); // r+b: lee y escribe, no trunca (a diferencia de wb)
+    if (f == NULL) {
+        storage_unlock();
+        return ESP_OK; // nada guardado todavia
+    }
+
+    uint32_t patched = 0;
+    for (uint32_t i = s_trip_count_at_boot; i < total; i++) {
+        trip_record_t rec;
+        if (fseek(f, (long)(i * sizeof(trip_record_t)), SEEK_SET) != 0 ||
+            fread(&rec, sizeof(rec), 1, f) != 1) {
+            break; // no deberia pasar (i < total), pero mejor cortar que leer basura
+        }
+        if (rec.recorded_at_epoch_s != 0) continue; // ya tenia fecha real (SNTP ya habia sincronizado cuando cerro)
+
+        rec.recorded_at_epoch_s = (uint32_t)(wall_clock_offset_s + rec.start_time_s);
+        if (fseek(f, (long)(i * sizeof(trip_record_t)), SEEK_SET) != 0 ||
+            fwrite(&rec, sizeof(rec), 1, f) != 1) {
+            ESP_LOGW(TAG, "no se pudo completar la fecha real del viaje %lu en %s", (unsigned long)i, TRIPS_FILE);
+            continue;
+        }
+        patched++;
+    }
+    fclose(f);
+    storage_unlock();
+
+    if (patched > 0) {
+        ESP_LOGI(TAG, "fecha real completada para %lu viaje(s) que habian cerrado antes de que SNTP sincronizara en este arranque", (unsigned long)patched);
+    }
     return ESP_OK;
 }

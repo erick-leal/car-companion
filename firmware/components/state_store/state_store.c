@@ -397,3 +397,23 @@ bool state_store_get_wall_clock_offset(int64_t *offset_s)
     unlock();
     return valid;
 }
+
+static sync_status_t s_sync_status = SYNC_STATUS_IDLE;
+
+esp_err_t state_store_set_sync_status(sync_status_t status)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_sync_status = status;
+    unlock();
+    // sin notify_subscribers a proposito: ui lo consulta con un timer propio, no es estado del vehiculo
+    return ESP_OK;
+}
+
+sync_status_t state_store_get_sync_status(void)
+{
+    if (lock() != ESP_OK) return SYNC_STATUS_IDLE;
+    sync_status_t status = s_sync_status;
+    unlock();
+    return status;
+}

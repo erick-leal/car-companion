@@ -313,6 +313,82 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Feedback visual del boton de sync (24 ago)
+
+Pedido real usando el dashboard nuevo: "aprete el boton de sync y deberia
+decir algo... o no tenemos nada". Antes `sync_now_event_cb` era
+fire-and-forget total, sin ninguna señal en pantalla de si el sync
+funciono, fallo, o no encontro WiFi -- solo se veia en el log serial.
+
+`state_store` gana `sync_status_t` (IDLE/IN_PROGRESS/OK/NO_WIFI/ERROR) con
+el mismo patron que el reloj de pared (no es "estado del vehiculo", no
+notifica suscriptores). `connectivity`'s `attempt_sync_window()` lo fija en
+cada punto de decision. `ui` agrega un label en la pantalla de Viaje que
+`lvgl_tick_task` redibuja cada ~200ms mientras esa pantalla esta activa
+(mismo patron que ya usaba la bateria del M5 en el dashboard), solo cuando
+el estado cambio. Al tocar el boton, se fija `SYNC_STATUS_IN_PROGRESS` de
+una vez (sin esperar a que `connectivity_task` levante el pedido del buzon,
+hasta 1s de por medio) para que el feedback se sienta inmediato.
+
+**Bug real encontrado probando en el auto el mismo dia:** el primer viaje
+real (41min, 17.9km) mostraba "Sincronizado" en pantalla pero nunca llego
+al backend (confirmado revisando los logs HTTP de Railway -- ningun POST a
+`/sync/trips`). Causa: `SYNC_STATUS_OK` se usaba tanto para "se mando con
+exito" como para "no habia nada pendiente" (el chequeo temprano en
+`attempt_sync_window()` cuando `storage_get_pending_sync_count() == 0`) --
+Erick probablemente apreto el boton mientras el viaje **todavia estaba en
+curso** (un viaje recien se guarda al terminar, no mientras se maneja), asi
+que no habia nada que mandar y el radio ni se prendio, pero el texto decia
+"Sincronizado" igual. Separado en un estado propio,
+`SYNC_STATUS_NOTHING_PENDING` ("Nada pendiente"), distinto de
+`SYNC_STATUS_OK` (que ahora solo se fija despues de un POST exitoso de
+verdad).
+
+**Confirmado en el auto real el mismo dia**: con el cursor arreglado y el
+timeout de SNTP subido a 12s (ver mas abajo), el primer viaje real de
+verdad se sincronizo de punta a punta y aparecio en el dashboard web.
+
+De paso aparecio otro bug real: el timeout de 5s para esperar la hora de
+SNTP a veces no alcanzaba aunque el WiFi ya habia conectado rapido y sobraba
+presupuesto en `WIFI_CONNECT_WINDOW_MS` (20s total) -- subido a 12s.
+
+Y un tercer bug real, mas de fondo: **el cursor de sync (`sync.bin`) y
+`trips.bin` son archivos independientes** -- cuando `trips.bin` se
+reinicio por el cambio de formato (ver seccion de fecha incorrecta, mas
+abajo), `sync.bin` no se entero y quedo "adelantado" (marcando 2 viajes
+sincronizados de un archivo que ya no los tenia). Como
+`pending = total - sincronizados`, un cursor mayor al total real hacia que
+CUALQUIER viaje nuevo se viera como "ya sincronizado" sin haberse mandado
+nunca -- el primer viaje real quedo invisible para `connectivity`, "Nada
+pendiente" en pantalla, sin ningun POST llegando al backend (confirmado
+revisando los logs HTTP de Railway). `storage_init()` ahora detecta esta
+situacion imposible (cursor > total) y reinicia el cursor a 0.
+
+**Bug adicional encontrado por Erick usando el dashboard**: el viaje
+sincronizado aparecia con la fecha/hora del momento del SYNC, no la del
+viaje real. Causa: ese viaje en particular se guardo (cerro) durante uno de
+los tantos reflasheos de hoy, en un arranque donde SNTP todavia no habia
+sincronizado nunca (`recorded_at_epoch_s` quedo en 0). Para cuando
+finalmente se sincronizo, ya era un arranque MUY posterior y distinto
+(varios reflasheos de por medio) -- el reloj interno del ESP32
+(`esp_timer`, segundos desde el boot) se reinicia en cada arranque, asi que
+`start_time_s` de ese viaje viejo ya no significaba nada en el arranque
+nuevo, y la reconstruccion de fecha en `connectivity.c` (pensada para
+"mismo arranque") dio una fecha esencialmente igual a "ahora". **Esa fecha
+ya no se puede recuperar** (el dato real nunca se guardo). Para reducir que
+esto vuelva a pasar: `storage_backfill_recorded_at_epoch()`, llamada apenas
+SNTP sincroniza (no hace falta esperar a que haya sync pendiente), completa
+la fecha real de cualquier viaje que ya haya cerrado en ESE MISMO arranque
+y siga con epoch=0 -- antes, la fecha se quedaba sin resolver hasta el
+momento del sync, ampliando la ventana en la que un reinicio de por medio
+la arruinaba para siempre. Sigue sin poder arreglar el caso de reiniciar el
+dispositivo ENTRE que el viaje cierra y la primera sincronizacion de SNTP
+de ese arranque (no hay bateria de RTC en este hardware) -- pero en uso
+normal (sin reflashear a cada rato) eso no deberia pasar seguido.
+
+Confirmado que compila limpio. Falta confirmar en un viaje real futuro
+(sin reflasheos de por medio) que la fecha queda bien de punta a punta.
+
 ## Checkpoint de viaje en curso a flash (24 ago)
 
 Resuelve el punto pendiente documentado a propósito más abajo ("Un viaje en

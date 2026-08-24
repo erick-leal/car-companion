@@ -75,6 +75,21 @@ typedef struct {
 
 esp_err_t storage_init(void);
 
+/**
+ * Completa recorded_at_epoch_s (ver trip_record_t arriba) en los viajes ya
+ * guardados EN ESTE ARRANQUE que todavia lo tengan en 0 -- llamada por
+ * `connectivity` apenas SNTP sincroniza (no hace falta esperar a que haya
+ * algo pendiente de sincronizar). Antes de esto, un viaje que terminaba
+ * antes de que SNTP sincronizara se quedaba con epoch=0 hasta el momento
+ * de sincronizar, y si el dispositivo se reiniciaba en el medio (ej.
+ * reflasheos durante pruebas), la fecha reconstruida en ese momento ya no
+ * tenia forma de ser correcta (el reloj interno se reinicia en cada
+ * arranque). Completarlo apenas se puede, sin esperar el sync, reduce esa
+ * ventana de riesgo al minimo. No toca viajes de arranques anteriores (no
+ * hay forma de saber si su start_time_s es valido en este arranque).
+ */
+esp_err_t storage_backfill_recorded_at_epoch(void);
+
 /** Cantidad de viajes guardados en la particion local. */
 esp_err_t storage_get_trip_count(uint32_t *out_count);
 

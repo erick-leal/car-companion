@@ -93,6 +93,27 @@ esp_err_t state_store_request_sync(void);
 bool state_store_consume_sync_request(void);
 
 /**
+ * Resultado del ultimo intento de sync (pedido real del 24 ago: el boton
+ * de sync manual no daba ningun feedback, "deberia decir algo o no
+ * tenemos nada"). `connectivity` lo fija al principio y al final de cada
+ * `attempt_sync_window()` (tanto si fue disparado por el boton como por el
+ * ciclo automatico); `ui` lo consulta con un timer mientras esta en la
+ * pantalla de Viaje. No es "estado del vehiculo" (no notifica
+ * suscriptores), mismo criterio que el reloj de pared de arriba.
+ */
+typedef enum {
+    SYNC_STATUS_IDLE = 0,        // ningun intento todavia en este arranque
+    SYNC_STATUS_IN_PROGRESS,     // WiFi prendido, conectando/sincronizando ahora
+    SYNC_STATUS_NOTHING_PENDING, // no habia ningun viaje pendiente -- el radio ni se prendio (ojo: un viaje EN CURSO no cuenta como pendiente todavia, recien se guarda al terminar)
+    SYNC_STATUS_OK,              // habia viaje(s) pendiente(s) y se mandaron con exito al backend
+    SYNC_STATUS_NO_WIFI,         // ultimo intento no encontro el WiFi de casa a tiempo
+    SYNC_STATUS_ERROR,           // WiFi conecto pero el envio al backend fallo (ver log serial para el detalle)
+} sync_status_t;
+
+esp_err_t state_store_set_sync_status(sync_status_t status);
+sync_status_t state_store_get_sync_status(void);
+
+/**
  * Reloj de pared aproximado del dispositivo — NO es "estado del vehiculo"
  * (no toca data_valid ni dispara notify_subscribers, ui no necesita
  * redibujar por esto), asi que vive aparte de vehicle_state_t, mismo

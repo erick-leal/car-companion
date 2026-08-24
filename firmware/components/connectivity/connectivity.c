@@ -80,6 +80,14 @@ static void on_sntp_time_synced(struct timeval *tv)
      * fecha del arranque actual, no la real (bug real, 23-24 ago). */
     int64_t offset_s = (int64_t)tv->tv_sec - (esp_timer_get_time() / 1000000);
     state_store_set_wall_clock_offset(offset_s);
+
+    /* Completa la fecha real de cualquier viaje que ya haya cerrado en este
+     * mismo arranque antes de que SNTP alcanzara a sincronizar (bug real
+     * visto en el auto el 24 ago: si el dispositivo se reiniciaba entre que
+     * el viaje cerraba y que se sincronizaba, la fecha reconstruida en el
+     * momento del sync ya no era recuperable). No hace falta esperar a que
+     * haya un sync pendiente para esto. */
+    storage_backfill_recorded_at_epoch();
 }
 
 /* --- WiFi + SNTP --- */
@@ -504,10 +512,12 @@ static void attempt_sync_window(void)
 {
     uint32_t pending;
     if (storage_get_pending_sync_count(&pending) != ESP_OK || pending == 0) {
-        return; // nada para sincronizar, no vale la pena gastar bateria prendiendo el radio
+        state_store_set_sync_status(SYNC_STATUS_NOTHING_PENDING);
+        return; // no vale la pena gastar bateria prendiendo el radio
     }
 
     ESP_LOGI(TAG, "prendiendo WiFi para intentar sincronizar (%lu viaje(s) pendiente(s))...", (unsigned long)pending);
+    state_store_set_sync_status(SYNC_STATUS_IN_PROGRESS);
     wifi_radio_start();
 
     int64_t deadline_us = esp_timer_get_time() + (int64_t)WIFI_CONNECT_WINDOW_MS * 1000;
@@ -518,18 +528,27 @@ static void attempt_sync_window(void)
     if (s_wifi_connected) {
         /* time_is_valid() puede seguir en false un instante despues de
          * conectar (SNTP todavia no completo su primer request) — un poco
-         * de margen extra acá antes de darlo por perdido en esta ventana. */
-        int64_t sntp_deadline_us = esp_timer_get_time() + 5LL * 1000000;
+         * de margen extra acá antes de darlo por perdido en esta ventana.
+         * 12s, no 5: visto en el auto real (24 ago) que 5s no siempre
+         * alcanza aunque el WiFi ya conecto rapido y sobra presupuesto en
+         * WIFI_CONNECT_WINDOW_MS (20s total) para esperar un poco mas. */
+        int64_t sntp_deadline_us = esp_timer_get_time() + 12LL * 1000000;
         while (!time_is_valid() && esp_timer_get_time() < sntp_deadline_us) {
             vTaskDelay(pdMS_TO_TICKS(300));
         }
         esp_err_t err = connectivity_sync_trip_history();
-        if (err == ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "sync: WiFi conecto pero la hora SNTP no llego a tiempo, se reintenta la proxima ventana");
+        if (err == ESP_OK) {
+            state_store_set_sync_status(SYNC_STATUS_OK);
+        } else {
+            if (err == ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "sync: WiFi conecto pero la hora SNTP no llego a tiempo, se reintenta la proxima ventana");
+            }
+            state_store_set_sync_status(SYNC_STATUS_ERROR);
         }
     } else {
         ESP_LOGI(TAG, "no se encontro el WiFi de casa en %ds, apagando el radio hasta el proximo intento",
                  WIFI_CONNECT_WINDOW_MS / 1000);
+        state_store_set_sync_status(SYNC_STATUS_NO_WIFI);
     }
 
     wifi_radio_stop();
