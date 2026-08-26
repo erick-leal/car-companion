@@ -34,8 +34,11 @@ static const char *TAG = "connectivity";
 
 /* Maximo tiempo con el radio WiFi prendido por intento, conectado o no —
  * si el WiFi de casa no aparece en esta ventana, se apaga igual y se
- * reintenta en el proximo ciclo. */
-#define WIFI_CONNECT_WINDOW_MS (20 * 1000)
+ * reintenta en el proximo ciclo. 30s, no 20: visto en el auto real (24 ago)
+ * que la espera de SNTP (ver sntp_deadline_us mas abajo) a veces necesita
+ * mas de 12s ella sola, incluso con el WiFi ya conectado rapido — 20s total
+ * se quedaba corto. */
+#define WIFI_CONNECT_WINDOW_MS (30 * 1000)
 
 /* Maximo de viajes por POST — evita un cuerpo JSON gigante de una sola vez
  * si el dispositivo estuvo semanas sin pasar cerca del WiFi de casa. Se van
@@ -82,6 +85,14 @@ static void on_sntp_time_synced(struct timeval *tv)
      * fecha del arranque actual, no la real (bug real, 23-24 ago). */
     int64_t offset_s = (int64_t)tv->tv_sec - (esp_timer_get_time() / 1000000);
     state_store_set_wall_clock_offset(offset_s);
+
+    /* Persistido para que el proximo arranque ya tenga una estimacion
+     * razonable de la hora real desde el principio, sin esperar a que WiFi
+     * conecte de nuevo (pedido real de Erick el 25 ago: un viaje que cierra
+     * antes del primer SNTP real de un arranque nuevo -- tipico despues de
+     * reflashear -- quedaba con la fecha del momento del sync, no la real).
+     * Ver storage_save_wall_clock_estimate() en storage.h. */
+    storage_save_wall_clock_estimate((int64_t)tv->tv_sec);
 
     /* Completa la fecha real de cualquier viaje que ya haya cerrado en este
      * mismo arranque antes de que SNTP alcanzara a sincronizar (bug real
@@ -221,7 +232,12 @@ static esp_err_t wifi_init_once(void)
      * tarea de fondo de sync ya chequea time_is_valid() antes de usarla.
      * sync_cb solo loguea confirmacion — sin esto no habia forma de saber
      * desde el log si SNTP realmente habia sincronizado o no. */
-    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    /* time.cloudflare.com, no pool.ntp.org: pool.ntp.org asigna un servidor
+     * al azar de un pool grande, y visto en el auto real (24 ago) que a
+     * veces tocaba uno lento (SNTP tardando >12s). Cloudflare es anycast
+     * (la misma IP resuelve al servidor mas cercano globalmente), mas
+     * consistente en latencia. */
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("time.cloudflare.com");
     sntp_cfg.wait_for_sync = false;
     sntp_cfg.sync_cb = &on_sntp_time_synced;
     err = esp_netif_sntp_init(&sntp_cfg);
@@ -571,10 +587,11 @@ static void attempt_sync_window(void)
         /* time_is_valid() puede seguir en false un instante despues de
          * conectar (SNTP todavia no completo su primer request) — un poco
          * de margen extra acá antes de darlo por perdido en esta ventana.
-         * 12s, no 5: visto en el auto real (24 ago) que 5s no siempre
-         * alcanza aunque el WiFi ya conecto rapido y sobra presupuesto en
-         * WIFI_CONNECT_WINDOW_MS (20s total) para esperar un poco mas. */
-        int64_t sntp_deadline_us = esp_timer_get_time() + 12LL * 1000000;
+         * 20s, no 12: visto en el auto real (24 ago) que 12s a veces
+         * tampoco alcanzaba (SNTP contra pool.ntp.org, que a veces resuelve
+         * a un servidor lento) -- sobra presupuesto en
+         * WIFI_CONNECT_WINDOW_MS (30s total) para esperar mas. */
+        int64_t sntp_deadline_us = esp_timer_get_time() + 20LL * 1000000;
         while (!time_is_valid() && esp_timer_get_time() < sntp_deadline_us) {
             vTaskDelay(pdMS_TO_TICKS(300));
         }

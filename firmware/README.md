@@ -313,6 +313,74 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Standby de pantalla: apagar el backlight sin uso (25 ago)
+
+Pedido real: Erick se bajo del auto con el M5 desconectado del OBD, se lo
+llevo en el bolsillo, y como una hora despues estaba muy caliente. Causa
+real: el backlight de la pantalla (riel DCDC3 del AXP192) se prende una
+vez en `core2_power_init()` y se queda asi para siempre — sin importar si
+hay conexion OBD o alguien mirando la pantalla. El backlight de un LCD de
+este tamaño es de los consumos mas grandes del dispositivo, y encerrado en
+un bolsillo sin ventilacion ese calor se siente mucho mas.
+
+`core2_power_set_backlight(bool)` (nuevo) prende/apaga solo el riel del
+backlight (bit 1 del registro 0x12 del AXP192) sin tocar la logica LCD
+(LDO2) ni forzar un reset del controlador -- la pantalla sigue "viva" por
+dentro (LVGL sigue dibujando), solo se apaga la luz.
+
+`ui`: `lvgl_tick_task` chequea cada ~2s si pasaron mas de
+`BACKLIGHT_IDLE_TIMEOUT_US` (3min) desde la ultima actividad, contando
+como actividad tanto un toque en la pantalla como que el OBD este
+conectado (`state_store` `data_valid`) -- asi nunca se apaga mientras se
+maneja, aunque el usuario no toque nada, y se prende de nuevo con
+cualquier toque. El chequeo va fuera del lock de LVGL a proposito: es una
+escritura I2C que puede tardar hasta 100ms, no vale la pena bloquear el
+redibujado por esto.
+
+Confirmado que compila limpio. Falta confirmar en hardware real que
+efectivamente se apaga a los 3min sin OBD y se prende con un toque, y que
+el M5 ya no se calienta igual en el bolsillo.
+
+## Reloj estimado persistido en flash (25 ago)
+
+Segundo problema real de fecha, encontrado por Erick despues del fix del
+24 ago (backfill dentro del mismo arranque): manejo un viaje, volvio 3
+horas despues, y el viaje seguia figurando con la fecha del momento del
+sync -- porque en el medio el M5 se reinicio (reflasheos de esta misma
+sesion de pruebas), y el backfill del 24 ago solo cubre viajes cerrados y
+sincronizados **en el mismo arranque**.
+
+`connectivity` ahora persiste la hora real a `/storage/clock.bin`
+(`storage_save_wall_clock_estimate()`) cada vez que SNTP sincroniza de
+verdad. `storage_init()` la carga de vuelta al arrancar, ANTES que
+cualquier otra cosa, como estimacion provisoria del reloj de pared (mismo
+mecanismo que ya usa `end_trip()`/el backfill, `state_store_set_wall_clock_
+offset()`) -- asi un viaje que cierra en un arranque nuevo, incluso antes
+de que WiFi/SNTP alcancen a sincronizar de verdad, ya tiene una fecha
+razonable en vez de 0/desconocida.
+
+Imprecision aceptada a proposito: si el dispositivo estuvo apagado mucho
+tiempo de verdad (no un reflasheo rapido de segundos), la estimacion queda
+vieja hasta que SNTP la corrija -- este mecanismo no reemplaza un RTC con
+bateria real, solo acorta la ventana de "sin ninguna pista" que existia
+antes.
+
+De paso, mismo dia: el boton "siguiente" de la pantalla de Viaje se
+agrando en dos vueltas -- primero de 44 a 90px (Erick tocaba
+sistematicamente ~50px a la derecha del boton real, ver logs de touch en
+la conversacion), pero siguio sin funcionarle, tocando cada vez MAS a la
+derecha (x:223, despues x:253) sin acertarle nunca. En vez de seguir
+adivinando de a poco cuanto agrandarlo, quedo en 164px -- ocupa todo el
+resto de la fila hasta cerca del borde de la pantalla, fisicamente
+imposible de fallar sin salirse de la pantalla misma -- y gano texto
+("SIGUIENTE", antes solo el icono), por si el icono solo costaba ubicar a
+simple vista.
+
+Confirmado que compila limpio. Falta probar en hardware real: reflashear,
+esperar a que sincronice una vez, apagar y prender de nuevo, manejar un
+viaje corto antes de que WiFi conecte, y confirmar que igual sale con una
+fecha razonable (no exacta, pero cercana).
+
 ## OTA: actualizar firmware por WiFi (24 ago)
 
 Resuelve el ultimo pendiente del "Proximo paso concreto" (punto 10):

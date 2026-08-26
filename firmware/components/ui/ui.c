@@ -14,6 +14,7 @@
 #include "lvgl.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>
 
 static const char *TAG = "ui";
 
@@ -650,8 +651,26 @@ static void render_trip_screen_content(void)
         snprintf(dur, sizeof(dur), "%lu min", (unsigned long)m);
     }
 
-    char body[220];
+    /* Fecha real (pedido del 24 ago, ahora factible gracias a
+     * recorded_at_epoch_s -- ver storage.h). UTC-4 fijo, no una zona
+     * horaria real: este proyecto es para Chile continental y newlib en
+     * este target no trae una base de datos de zonas horarias/horario de
+     * verano -- puede quedar 1h desfasado en horario de verano. "0" sigue
+     * significando "SNTP nunca sincronizo mientras este viaje estuvo en
+     * RAM" (viajes de antes de esta funcionalidad, o cerrados en un
+     * arranque donde WiFi nunca llego a conectar). */
+    char date[32] = "Fecha: desconocida";
+    if (trip.recorded_at_epoch_s != 0) {
+        time_t epoch = (time_t)trip.recorded_at_epoch_s - (4 * 3600);
+        struct tm tm_local;
+        gmtime_r(&epoch, &tm_local);
+        snprintf(date, sizeof(date), "Fecha: %02d-%02d %02d:%02d",
+                 tm_local.tm_mday, tm_local.tm_mon + 1, tm_local.tm_hour, tm_local.tm_min);
+    }
+
+    char body[260];
     snprintf(body, sizeof(body),
+             "%s\n"
              "Duracion: %s\n"
              "Distancia: %.1f km\n"
              "Combustible: %.2f L\n"
@@ -660,7 +679,7 @@ static void render_trip_screen_content(void)
              "Temp max: %d C\n"
              "Bateria min: %.1f V\n"
              "Check engine: %s",
-             dur, (double)trip.distance_km, (double)trip.fuel_used_l, trip.avg_speed_kmh,
+             date, dur, (double)trip.distance_km, (double)trip.fuel_used_l, trip.avg_speed_kmh,
              trip.max_rpm, trip.max_coolant_c, (double)trip.min_battery_v,
              trip.check_engine_seen ? "si" : "no");
     lv_label_set_text(s_lbl_trip_body, body);
@@ -740,9 +759,14 @@ static void build_trip_screen(void)
     lv_obj_set_style_text_color(s_lbl_trip_header, COL_CAPTION, 0);
     lv_obj_align(s_lbl_trip_header, LV_ALIGN_TOP_LEFT, 8, 8);
 
+    /* Fila de abajo con tres botones parejos (25 ago, segundo rediseño):
+     * el primer intento de agrandar solo "siguiente" dejo un "anterior"
+     * chico y sin texto, feo y en desequilibrio al lado de los otros dos
+     * -- ahora los tres miden lo mismo (100px) y tienen texto, repartidos
+     * con margenes iguales en los 320px de ancho. */
     lv_obj_t *back = lv_btn_create(scr);
-    lv_obj_set_size(back, 88, 24);
-    lv_obj_set_pos(back, 6, 206);
+    lv_obj_set_size(back, 100, 24);
+    lv_obj_set_pos(back, 4, 206);
     lv_obj_set_style_bg_color(back, COL_CARD, 0);
     lv_obj_set_style_radius(back, 5, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
@@ -754,27 +778,29 @@ static void build_trip_screen(void)
     lv_obj_center(back_lbl);
 
     lv_obj_t *prev_btn = lv_btn_create(scr);
-    lv_obj_set_size(prev_btn, 44, 24);
-    lv_obj_set_pos(prev_btn, 100, 206);
+    lv_obj_set_size(prev_btn, 100, 24);
+    lv_obj_set_pos(prev_btn, 110, 206);
     lv_obj_set_style_bg_color(prev_btn, COL_CARD, 0);
     lv_obj_set_style_radius(prev_btn, 5, 0);
     lv_obj_set_style_shadow_width(prev_btn, 0, 0);
     lv_obj_add_event_cb(prev_btn, trip_prev_event_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *prev_lbl = lv_label_create(prev_btn);
+    lv_obj_set_style_text_font(prev_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(prev_lbl, COL_ACCENT, 0);
-    lv_label_set_text(prev_lbl, LV_SYMBOL_LEFT);
+    lv_label_set_text(prev_lbl, LV_SYMBOL_LEFT " ANTERIOR");
     lv_obj_center(prev_lbl);
 
     lv_obj_t *next_btn = lv_btn_create(scr);
-    lv_obj_set_size(next_btn, 44, 24);
-    lv_obj_set_pos(next_btn, 150, 206);
+    lv_obj_set_size(next_btn, 100, 24);
+    lv_obj_set_pos(next_btn, 216, 206);
     lv_obj_set_style_bg_color(next_btn, COL_CARD, 0);
     lv_obj_set_style_radius(next_btn, 5, 0);
     lv_obj_set_style_shadow_width(next_btn, 0, 0);
     lv_obj_add_event_cb(next_btn, trip_next_event_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *next_lbl = lv_label_create(next_btn);
+    lv_obj_set_style_text_font(next_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(next_lbl, COL_ACCENT, 0);
-    lv_label_set_text(next_lbl, LV_SYMBOL_RIGHT);
+    lv_label_set_text(next_lbl, "SIGUIENTE " LV_SYMBOL_RIGHT);
     lv_obj_center(next_lbl);
 
     s_lbl_trip_body = lv_label_create(scr);
@@ -1211,6 +1237,18 @@ static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
  * coordenada cruda del FT6336U hay que invertirla para que coincida con lo
  * que se ve. Se loguea el primer toque de cada pulsacion para poder calibrar
  * con datos si algun eje quedara al reves. */
+/* Standby de pantalla (25 ago): pedido real de Erick -- se llevo el M5 en
+ * el bolsillo sin conexion OBD despues de bajarse del auto y se calento
+ * despues de una hora con la pantalla prendida sin nada que mostrar. Se
+ * apaga el backlight (no la logica LVGL, que sigue corriendo normal) si
+ * pasa BACKLIGHT_IDLE_TIMEOUT_US sin actividad, contando como actividad
+ * cualquier toque O que el OBD este conectado (data_valid) -- asi nunca se
+ * apaga manejando, aunque el usuario no toque nada, y se prende de nuevo
+ * solo con tocar la pantalla. */
+#define BACKLIGHT_IDLE_TIMEOUT_US (3LL * 60 * 1000000)
+static int64_t s_last_activity_us;
+static bool    s_backlight_on = true;
+
 static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
     (void)drv;
@@ -1222,6 +1260,7 @@ static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
         int y = (CORE2_LCD_HEIGHT - 1) - (int)ry;
         if (!was_pressed) {
             was_pressed = true;
+            s_last_activity_us = esp_timer_get_time();
             ESP_LOGI(TAG, "touch crudo=(%u,%u) -> pantalla=(%d,%d)", rx, ry, x, y);
         }
         if (x < 0) x = 0;
@@ -1302,6 +1341,26 @@ static void lvgl_tick_task(void *arg)
             lv_timer_handler();
             lvgl_unlock();
         }
+
+        /* Standby de pantalla (25 ago, ver comentario junto a
+         * BACKLIGHT_IDLE_TIMEOUT_US mas arriba). Fuera del lvgl_lock a
+         * proposito: es una escritura I2C al AXP192 (puede tardar hasta
+         * 100ms si el bus esta ocupado), no vale la pena bloquear el
+         * redibujado de LVGL por esto. */
+        if ((iter % 200) == 0) { // cada ~2s (200 * 10ms)
+            vehicle_state_t vs;
+            if (state_store_get(&vs) == ESP_OK && vs.data_valid) {
+                s_last_activity_us = esp_timer_get_time();
+            }
+            bool should_be_on = (esp_timer_get_time() - s_last_activity_us) < BACKLIGHT_IDLE_TIMEOUT_US;
+            if (should_be_on != s_backlight_on) {
+                core2_power_set_backlight(should_be_on);
+                s_backlight_on = should_be_on;
+                ESP_LOGI(TAG, "backlight %s (%s)", should_be_on ? "ON" : "OFF",
+                         should_be_on ? "actividad detectada" : "sin actividad ni OBD conectado por 3min");
+            }
+        }
+
         iter++;
         vTaskDelay(pdMS_TO_TICKS(tick_ms));
     }
@@ -1311,6 +1370,12 @@ esp_err_t ui_init(void)
 {
     ESP_ERROR_CHECK(core2_power_init());
     ESP_ERROR_CHECK(core2_display_init(&s_panel, &s_panel_io));
+
+    /* Arranca el conteo de inactividad recien ahora, no en 0 -- le da
+     * BACKLIGHT_IDLE_TIMEOUT_US completo de gracia desde que arranca de
+     * verdad, en vez de heredar lo que sea que haya tardado el boot hasta
+     * este punto. */
+    s_last_activity_us = esp_timer_get_time();
 
     s_lvgl_mutex = xSemaphoreCreateMutex();
     if (s_lvgl_mutex == NULL) {

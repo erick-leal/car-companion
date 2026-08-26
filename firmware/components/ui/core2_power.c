@@ -105,6 +105,17 @@ esp_err_t core2_power_init(void)
     return ESP_OK;
 }
 
+esp_err_t core2_power_set_backlight(bool on)
+{
+    /* Mismo registro que el init (0x12), bit 1 = DCDC3 (backlight). Bit 2
+     * (LDO2, logica LCD) se deja siempre prendido -- apagarla tambien
+     * forzaria un reset completo del controlador de la pantalla al
+     * volver a prenderla, mas lento y innecesario solo para ahorrar el
+     * poco consumo de la logica (el grueso del ahorro/calor esta en el
+     * backlight en si). */
+    return axp192_rmw(0x12, (1 << 1), on ? (1 << 1) : 0);
+}
+
 int core2_power_get_battery_pct(void)
 {
     /* ADC de bateria: 12 bits repartidos en dos registros consecutivos

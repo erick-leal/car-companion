@@ -15,6 +15,7 @@ static const char *TAG = "storage";
 #define MAINT_FILE      MOUNT_POINT "/maint.bin"
 #define SYNC_FILE       MOUNT_POINT "/sync.bin"
 #define CHECKPOINT_FILE MOUNT_POINT "/checkpoint.bin"
+#define CLOCK_FILE       MOUNT_POINT "/clock.bin"
 
 /* Cada cuanto se guarda a flash el progreso del viaje en curso, para no
  * perderlo entero si se corta la energia a mitad de un viaje largo (pedido
@@ -451,6 +452,8 @@ static void recover_checkpoint_if_any(void)
     save_trip_and_update_maintenance(&rec, true);
 }
 
+static void load_wall_clock_estimate(void); // definida mas abajo, usada por storage_init()
+
 esp_err_t storage_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
@@ -470,6 +473,7 @@ esp_err_t storage_init(void)
         return err;
     }
 
+    load_wall_clock_estimate(); // antes que nada mas: cuanto antes tengamos una estimacion, mejor
     migrate_trips_file_if_needed();
     load_maintenance();
     recover_checkpoint_if_any();
@@ -620,6 +624,43 @@ esp_err_t storage_adjust_filter_km_remaining(float delta_km)
     save_maintenance();
     storage_unlock();
     return ESP_OK;
+}
+
+esp_err_t storage_save_wall_clock_estimate(int64_t epoch_s)
+{
+    if (!storage_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t ret = ESP_OK;
+    FILE *f = fopen(CLOCK_FILE, "wb");
+    if (f == NULL) {
+        ret = ESP_FAIL;
+    } else {
+        size_t written = fwrite(&epoch_s, sizeof(epoch_s), 1, f);
+        fclose(f);
+        if (written != 1) ret = ESP_FAIL;
+    }
+    storage_unlock();
+    return ret;
+}
+
+/* Llamada una sola vez desde storage_init(), antes de que WiFi/SNTP puedan
+ * sincronizar de nuevo en este arranque -- ver storage_save_wall_clock_
+ * estimate() en storage.h para el porque. */
+static void load_wall_clock_estimate(void)
+{
+    FILE *f = fopen(CLOCK_FILE, "rb");
+    if (f == NULL) return; // primer boot, o SNTP nunca sincronizo en la vida de este dispositivo
+
+    int64_t saved_epoch_s;
+    bool ok = fread(&saved_epoch_s, sizeof(saved_epoch_s), 1, f) == 1;
+    fclose(f);
+    if (!ok) {
+        ESP_LOGW(TAG, "%s existe pero no se pudo leer completo, se ignora", CLOCK_FILE);
+        return;
+    }
+
+    int64_t offset_s = saved_epoch_s - (esp_timer_get_time() / 1000000);
+    state_store_set_wall_clock_offset(offset_s);
+    ESP_LOGI(TAG, "hora estimada de un arranque anterior cargada de %s (offset provisorio hasta que SNTP sincronice de verdad en este arranque)", CLOCK_FILE);
 }
 
 esp_err_t storage_backfill_recorded_at_epoch(void)
