@@ -313,6 +313,38 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Identificar el auto por VIN (25 ago)
+
+Pedido real: "¿el M5 puede saber si estoy en la Maxus o en el MG3?". Hoy no
+sabía nada del vehículo — solo hablaba PIDs OBD genéricos, iguales en
+cualquier auto. El estándar sí tiene una forma de preguntarle al auto quién
+es: **modo 09 PID 02, devuelve el VIN** (número de chasis, 17 caracteres),
+soportado por casi cualquier vehículo desde mediados de los 2000.
+
+`pid_math` gana `pid_math_strip_frame_prefixes()` (ELM327 agrega "0:",
+"1:"... en respuestas multi-frame como esta, hay que sacarlos antes de
+`pid_math_ascii_hex_to_bytes`) y `pid_math_parse_vin()` (formato SAE J1979:
+header "49 02 01" + 17 bytes ASCII) — con tests de host, mismo criterio que
+el resto de `pid_math`. `pid_engine` lo pide una sola vez por conexión OBD
+(mismo `discovered` flag que ya usaba `discover_supported_pids()` — se
+resetea al reconectar, "puede ser otro auto"), lo guarda en `state_store`
+(mismo patrón que el reloj de pared: no es estado del vehículo, no
+notifica). `connectivity` lo manda con cada viaje al sincronizar
+(`vehicle_vin`, opcional).
+
+**Limitación aceptada a propósito:** es el VIN conocido *al momento de
+sincronizar*, no uno guardado por viaje en `trips.bin` (hubiera sido otro
+cambio de formato — ya tuvimos varios hoy). Si se cambia de auto antes de
+que un viaje viejo llegue a sincronizar, ese viaje queda etiquetado con el
+auto nuevo. Si esto se vuelve un problema real (alguien rotando de auto
+seguido con sync pendiente de por medio), ahí sí valdría la pena guardar el
+VIN por viaje.
+
+Confirmado: tests de host de `pid_math` pasan (incluyendo el VIN de
+ejemplo `1HGCM82633A004352`, formato SAE válido). Compila limpio. Falta
+probar en el auto real que el Maxus efectivamente responde modo 09 (no
+todos los vehículos lo soportan igual de bien).
+
 ## Standby de pantalla: apagar el backlight sin uso (25 ago)
 
 Pedido real: Erick se bajo del auto con el M5 desconectado del OBD, se lo

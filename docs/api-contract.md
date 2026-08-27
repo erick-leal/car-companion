@@ -42,7 +42,8 @@ El firmware sube el historial de viajes acumulado offline.
       "distance_km": 0.0,
       "avg_consumption": 0.0, // L/100km (definido 24 ago) — omitido/null si el vehículo no expone flujo de combustible por OBD
       "max_rpm": 0,
-      "dtc_codes": ["P0299"]
+      "dtc_codes": ["P0299"],
+      "vehicle_vin": "1HGCM82633A004352" // opcional (25 ago) — ver nota abajo
     }
   ]
 }
@@ -95,3 +96,16 @@ Códigos de falla (DTC) de un viaje puntual — para la pantalla de diagnóstico
   individual (solo un `bool check_engine_seen`), así que `dtc_codes` en el
   payload de sync también se omite por ahora — habría que decidir si vale
   la pena guardar los códigos reales por viaje en `storage` para esto.
+- **`vehicle_vin` (agregado 25 ago):** pedido real — si el mismo M5/adaptador
+  se usa en más de un vehículo, poder distinguir después de qué auto fue
+  cada viaje. `pid_engine` lee el VIN una sola vez por conexión OBD (modo 09
+  PID 02, se re-lee si se reconecta — puede ser otro auto) y lo guarda en
+  `state_store`; `connectivity` lo manda con cada viaje al sincronizar.
+  Migración `003_vehicle_vin.sql` agrega `trips.vehicle_vin` (nullable —
+  adaptadores/vehículos que no soportan modo 09 simplemente no lo mandan).
+  **Limitación aceptada:** es el VIN conocido *al momento del sync*, no un
+  VIN guardado por viaje en el firmware (hubiera significado otro cambio de
+  formato de `trips.bin`) — si se cambia de auto antes de que un viaje viejo
+  llegue a sincronizar, ese viaje queda etiquetado con el auto nuevo. El
+  dashboard muestra los últimos 6 caracteres del VIN junto al nombre del
+  dispositivo.

@@ -27,11 +27,11 @@ syncRouter.post("/trips", requireDeviceAuth, async (req: AuthedDeviceRequest, re
 
     for (const trip of trips) {
       const tripResult = await client.query(
-        `INSERT INTO trips (device_id, started_at, ended_at, distance_km, avg_consumption, max_rpm)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO trips (device_id, started_at, ended_at, distance_km, avg_consumption, max_rpm, vehicle_vin)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
         [deviceId, trip.started_at, trip.ended_at, trip.distance_km ?? null,
-         trip.avg_consumption ?? null, trip.max_rpm ?? null]
+         trip.avg_consumption ?? null, trip.max_rpm ?? null, trip.vehicle_vin ?? null]
       );
       const tripId = tripResult.rows[0].id;
       insertedIds.push(tripId);
@@ -63,7 +63,7 @@ syncRouter.post("/trips", requireDeviceAuth, async (req: AuthedDeviceRequest, re
 /** Historial de viajes del usuario (para la futura app móvil / dashboard) — login de usuario, no token de dispositivo. */
 syncRouter.get("/trips", requireAuth, async (req: AuthedRequest, res) => {
   const result = await pool.query(
-    `SELECT t.id, t.started_at, t.ended_at, t.distance_km, t.avg_consumption, t.max_rpm,
+    `SELECT t.id, t.started_at, t.ended_at, t.distance_km, t.avg_consumption, t.max_rpm, t.vehicle_vin,
             d.name AS device_name
      FROM trips t
      JOIN devices d ON d.id = t.device_id

@@ -18,6 +18,15 @@
  */
 int pid_math_ascii_hex_to_bytes(const char *ascii, uint8_t *out, size_t out_max);
 
+/**
+ * Quita los prefijos de numero de linea que ELM327 agrega en respuestas
+ * multi-frame (modo 09, VIN incluido) por default: "0:", "1:", etc. — un
+ * digito hex seguido de ':', sin espacio. Sin esto, pid_math_ascii_hex_to_bytes
+ * falla al toparse con el ':' (no es digito hex ni espacio). Modifica ascii
+ * en el lugar (nunca crece, solo se puede achicar).
+ */
+void pid_math_strip_frame_prefixes(char *ascii);
+
 /** PID 0x0C — RPM = ((A*256)+B)/4 */
 uint16_t pid_math_rpm(uint8_t a, uint8_t b);
 
@@ -72,3 +81,14 @@ int pid_math_decode_dtc(uint8_t hi, uint8_t lo, char out[6]);
  * Devuelve la cantidad de codigos escritos en out_codes (hasta max_codes).
  */
 int pid_math_parse_dtc_list(const uint8_t *bytes, int n, char out_codes[][6], int max_codes);
+
+/**
+ * Parsea la respuesta de modo 09 PID 02 (VIN) ya convertida a bytes (ver
+ * pid_math_ascii_hex_to_bytes, despues de pid_math_strip_frame_prefixes).
+ * Formato SAE J1979: header "49 02 01" (modo+0x40, PID, cantidad de items)
+ * seguido de 17 bytes ASCII con el VIN -- se salta el header si esta
+ * presente. out_vin debe tener al menos 18 bytes (17 + '\0'). Devuelve 1 si
+ * se pudo juntar el VIN completo (17 caracteres), 0 si la respuesta vino
+ * incompleta (adaptador/vehiculo no lo soporta, o se corto en el medio).
+ */
+int pid_math_parse_vin(const uint8_t *bytes, int n, char out_vin[18]);

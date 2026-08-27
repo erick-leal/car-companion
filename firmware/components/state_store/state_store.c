@@ -398,6 +398,29 @@ bool state_store_get_wall_clock_offset(int64_t *offset_s)
     return valid;
 }
 
+static bool s_vin_valid;
+static char s_vin[18];
+
+esp_err_t state_store_set_vin(const char *vin)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    strncpy(s_vin, vin, sizeof(s_vin) - 1);
+    s_vin[sizeof(s_vin) - 1] = '\0';
+    s_vin_valid = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_get_vin(char out_vin[18])
+{
+    if (lock() != ESP_OK) return false;
+    bool valid = s_vin_valid;
+    if (valid) memcpy(out_vin, s_vin, sizeof(s_vin));
+    unlock();
+    return valid;
+}
+
 static sync_status_t s_sync_status = SYNC_STATUS_IDLE;
 
 esp_err_t state_store_set_sync_status(sync_status_t status)

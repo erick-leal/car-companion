@@ -25,6 +25,11 @@ export const tripSchema = z.object({
   avg_consumption: z.number().nonnegative().nullable().optional(), // null si el vehículo no expone flujo de combustible
   max_rpm: z.number().int().nonnegative().optional(),
   dtc_codes: z.array(z.string()).optional(),
+  // VIN del vehículo conectado al momento de este viaje (25 ago) — permite
+  // distinguir de qué auto son los datos si el mismo dispositivo se usa en
+  // más de un vehículo. Se omite si el auto no respondió modo 09 (adaptador
+  // o vehículo viejo que no lo soporta) — nunca inventado.
+  vehicle_vin: z.string().length(17).optional(),
 });
 
 export const syncPayloadSchema = z.object({

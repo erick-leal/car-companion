@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "migrate": "psql \"$DATABASE_URL\" -f src/db/migrations/001_init.sql && psql \"$DATABASE_URL\" -f src/db/migrations/002_device_tokens.sql",
+    "migrate": "psql \"$DATABASE_URL\" -f src/db/migrations/001_init.sql && psql \"$DATABASE_URL\" -f src/db/migrations/002_device_tokens.sql && psql \"$DATABASE_URL\" -f src/db/migrations/003_vehicle_vin.sql",
     "test": "tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {

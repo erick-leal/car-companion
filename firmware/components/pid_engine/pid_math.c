@@ -1,6 +1,7 @@
 #include "pid_math.h"
 #include <ctype.h>
 #include <stdlib.h>
+#include <string.h>
 
 int pid_math_ascii_hex_to_bytes(const char *ascii, uint8_t *out, size_t out_max)
 {
@@ -24,6 +25,19 @@ int pid_math_ascii_hex_to_bytes(const char *ascii, uint8_t *out, size_t out_max)
         i += 2;
     }
     return (int)out_len;
+}
+
+void pid_math_strip_frame_prefixes(char *ascii)
+{
+    char *src = ascii, *dst = ascii;
+    while (*src != '\0') {
+        if (isxdigit((unsigned char)src[0]) && src[1] == ':') {
+            src += 2; // "N:" -- prefijo de linea de un frame, no dato
+            continue;
+        }
+        *dst++ = *src++;
+    }
+    *dst = '\0';
 }
 
 uint16_t pid_math_rpm(uint8_t a, uint8_t b)
@@ -110,4 +124,17 @@ int pid_math_parse_dtc_list(const uint8_t *bytes, int n, char out_codes[][6], in
         }
     }
     return count;
+}
+
+int pid_math_parse_vin(const uint8_t *bytes, int n, char out_vin[18])
+{
+    int start = (n >= 3 && bytes[0] == 0x49 && bytes[1] == 0x02) ? 3 : 0;
+
+    int len = 0;
+    for (int i = start; i < n && len < 17; i++) {
+        if (bytes[i] == 0x00) continue; // algunos adaptadores rellenan con ceros, no son parte del VIN
+        out_vin[len++] = (char)bytes[i];
+    }
+    out_vin[len] = '\0';
+    return len == 17 ? 1 : 0;
 }

@@ -135,6 +135,19 @@ esp_err_t state_store_set_wall_clock_offset(int64_t offset_s);
 bool state_store_get_wall_clock_offset(int64_t *offset_s);
 
 /**
+ * VIN (numero de chasis) del vehiculo actualmente conectado -- permite
+ * saber en que auto se esta capturando datos si el mismo M5 (o el mismo
+ * adaptador) se usa en mas de un vehiculo (pedido real del 25 ago).
+ * `pid_engine` lo lee una sola vez por conexion (modo 09 PID 02) y lo fija
+ * aca; `connectivity` lo manda con cada viaje al sincronizar. Mismo
+ * criterio que el reloj de pared: no es "estado del vehiculo" en el
+ * sentido de vehicle_state_t, no notifica suscriptores.
+ */
+esp_err_t state_store_set_vin(const char *vin);
+/** true si hay un VIN conocido en este arranque (deja out_vin sin tocar si no). out_vin debe tener 18 bytes. */
+bool state_store_get_vin(char out_vin[18]);
+
+/**
  * Marca data_valid=false (el adaptador OBD se desconecto — reason real de
  * manejo: el Vgate se resetea con la caida de tension al arrancar el motor,
  * o queda fuera de rango momentaneamente). Deja el resto de los campos

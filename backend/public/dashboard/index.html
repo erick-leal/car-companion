@@ -254,11 +254,16 @@ function renderTrip(trip) {
   const distance = trip.distance_km != null ? Number(trip.distance_km).toFixed(1) + " km" : "—";
   const consumption = trip.avg_consumption != null ? Number(trip.avg_consumption).toFixed(1) + " L/100km" : "—";
   const maxRpm = trip.max_rpm != null ? trip.max_rpm : "—";
+  /* Ultimos 6 del VIN (25 ago): identifica el auto sin ocupar el espacio de
+   * las 17 letras completas -- convencion comun (ej. la etiqueta de un
+   * llavero de auto usado). null si el adaptador/vehiculo no expuso modo 09
+   * ese viaje (no todos lo soportan). */
+  const vehicleTag = trip.vehicle_vin ? " · …" + trip.vehicle_vin.slice(-6) : "";
 
   card.innerHTML =
     '<div class="trip-top">' +
       '<span class="trip-date">' + fmtDate(trip.started_at) + "</span>" +
-      '<span class="trip-device">' + (trip.device_name || "Dispositivo") + "</span>" +
+      '<span class="trip-device">' + (trip.device_name || "Dispositivo") + vehicleTag + "</span>" +
     "</div>" +
     '<div class="trip-stats">' +
       "<span>Duración: <b>" + fmtDuration(trip.started_at, trip.ended_at) + "</b></span>" +

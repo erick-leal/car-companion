@@ -482,6 +482,22 @@ static bool add_trip_to_array(cJSON *trips_array, const trip_record_t *rec, int6
      * pena guardar los codigos reales por viaje en storage para esto (ver
      * docs/api-contract.md). */
 
+    /* VIN (25 ago): pedido real de Erick -- si el mismo M5/adaptador se usa
+     * en mas de un auto, poder distinguir despues de que auto fue cada
+     * viaje. OJO con la limitacion real: esto es el VIN CONOCIDO AHORA (al
+     * momento de sincronizar), no el que tenia el auto cuando el viaje
+     * pasó -- trip_record_t no guarda un VIN por viaje (hubiera significado
+     * otro cambio de formato de trips.bin, y ya tuvimos varios hoy). Si el
+     * viaje y el sync pasan con el mismo auto conectado (el caso normal),
+     * es correcto. Si se cambia de auto ANTES de que un viaje viejo llegue
+     * a sincronizar, ese viaje queda etiquetado con el auto nuevo -- riesgo
+     * aceptado por ahora, se resolveria guardando el VIN por viaje si esto
+     * se vuelve un problema real. */
+    char vin[18];
+    if (state_store_get_vin(vin)) {
+        cJSON_AddStringToObject(t, "vehicle_vin", vin);
+    }
+
     cJSON_AddItemToArray(trips_array, t);
     return true;
 }

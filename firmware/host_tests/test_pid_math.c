@@ -172,6 +172,46 @@ int main(void)
         ASSERT_EQ_INT("parse_atrv texto invalido -> 0", 0, ok);
     }
 
+    // strip_frame_prefixes: ELM327 agrega "N:" (indice de linea) en respuestas
+    // multi-frame como el VIN -- hay que sacarlo antes de ascii_hex_to_bytes.
+    {
+        char text[128];
+        strcpy(text, "0:49 02 01 31 48 47 43\r1:4D 38 32 36 33 33 41 30\r2:30 34 33 35 32\r>");
+        pid_math_strip_frame_prefixes(text);
+        int ok = strcmp(text, "49 02 01 31 48 47 43\r4D 38 32 36 33 33 41 30\r30 34 33 35 32\r>") == 0;
+        ASSERT_EQ_INT("strip_frame_prefixes saca los indices de linea", 1, ok);
+    }
+    {
+        char text[32];
+        strcpy(text, "41 0C 1A F8"); // respuesta normal (un solo frame), no debe tocarse
+        pid_math_strip_frame_prefixes(text);
+        int ok = strcmp(text, "41 0C 1A F8") == 0;
+        ASSERT_EQ_INT("strip_frame_prefixes sin prefijos no cambia nada", 1, ok);
+    }
+
+    // VIN (modo 09 PID 02): respuesta multi-frame real reconstruida a mano,
+    // VIN de ejemplo "1HGCM82633A004352" (formato SAE J1979 valido, 17 chars)
+    {
+        char text[128];
+        strcpy(text, "0:49 02 01 31 48 47 43\r1:4D 38 32 36 33 33 41 30\r2:30 34 33 35 32\r>");
+        pid_math_strip_frame_prefixes(text);
+        uint8_t bytes[32];
+        int n = pid_math_ascii_hex_to_bytes(text, bytes, sizeof(bytes));
+        char vin[18];
+        int ok = pid_math_parse_vin(bytes, n, vin);
+        ASSERT_EQ_INT("parse_vin junta el VIN completo", 1, ok);
+        int match = strcmp(vin, "1HGCM82633A004352") == 0;
+        ASSERT_EQ_INT("parse_vin VIN == 1HGCM82633A004352", 1, match);
+    }
+    {
+        // Respuesta incompleta (adaptador/vehiculo no soporta modo 09, o se
+        // corto en el medio) -> 0, no un VIN a medias
+        uint8_t bytes[8] = {0x49, 0x02, 0x01, 0x31, 0x48};
+        char vin[18];
+        int ok = pid_math_parse_vin(bytes, 5, vin);
+        ASSERT_EQ_INT("parse_vin respuesta incompleta -> 0", 0, ok);
+    }
+
     printf("\n%s: %d fallas\n", g_failures == 0 ? "TODO OK" : "HAY FALLAS", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

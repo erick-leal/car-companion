@@ -278,6 +278,47 @@ static void log_discovery_response(const uint8_t *raw, size_t raw_len, void *ctx
     ESP_LOGI(TAG, "descubrimiento PIDs soportados (rango %s): '%s'", label, text);
 }
 
+static void handle_vin_response(const uint8_t *raw, size_t raw_len, void *ctx)
+{
+    (void)ctx;
+    char text[128];
+    size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    memcpy(text, raw, copy_len);
+    text[copy_len] = '\0';
+
+    if (strstr(text, "NO DATA") || strstr(text, "ERROR") || strstr(text, "UNABLE")) {
+        ESP_LOGI(TAG, "VIN: el vehiculo/adaptador no respondio modo 09 ('%s') -- no es grave, solo no vamos a saber en que auto se capturo este viaje", text);
+        return;
+    }
+
+    pid_math_strip_frame_prefixes(text);
+    uint8_t bytes[32];
+    int n = pid_math_ascii_hex_to_bytes(text, bytes, sizeof(bytes));
+    if (n < 1) {
+        ESP_LOGW(TAG, "VIN: respuesta no parseable '%s'", text);
+        return;
+    }
+
+    char vin[18];
+    if (!pid_math_parse_vin(bytes, n, vin)) {
+        ESP_LOGW(TAG, "VIN: respuesta incompleta, no se pudo armar el VIN completo ('%s')", text);
+        return;
+    }
+
+    state_store_set_vin(vin);
+    ESP_LOGI(TAG, "VIN del vehiculo conectado: %s", vin);
+}
+
+/* Se pide una sola vez por conexion (mismo criterio que discover_supported_
+ * pids: si el OBD se reconecta, puede ser un auto distinto, hay que volver
+ * a preguntar). Modo 09 PID 02, ver pid_math_parse_vin() para el formato de
+ * la respuesta. */
+static void read_vin(void)
+{
+    ESP_LOGI(TAG, "consultando VIN del vehiculo conectado...");
+    obd_driver_send_command("0902", handle_vin_response, NULL);
+}
+
 static void discover_supported_pids(void)
 {
     ESP_LOGI(TAG, "consultando PIDs estandar soportados por la ECU (una sola vez)...");
@@ -377,6 +418,7 @@ static void poll_task(void *arg)
 
         if (!discovered) {
             discover_supported_pids();
+            read_vin();
             discovered = true;
         }
 
