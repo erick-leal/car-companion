@@ -30,7 +30,14 @@ typedef enum {
 
 esp_err_t pid_engine_init(void);
 
-/** Arranca una tarea FreeRTOS que hace polling round-robin de los PIDs activos. */
+/**
+ * Arranca una tarea FreeRTOS que hace polling round-robin de los PIDs
+ * activos. Esta misma tarea tambien atiende, dentro del mismo loop, el
+ * boton "CAPTURAR BUS" de la pantalla de Diagnostico (ver ui.c y el buzon
+ * state_store_request_bus_capture_start/stop): mientras esa captura esta
+ * activa, el polling normal de PIDs queda en pausa -- es ingenieria reversa
+ * manual de PIDs propietarios (boost real, EGT), ver docs/pid-mapping.md.
+ */
 esp_err_t pid_engine_start_polling(void);
 
 /**

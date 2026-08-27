@@ -91,6 +91,7 @@ static sync_status_t s_last_shown_sync_status = (sync_status_t)-1; // fuerza el 
 static uint32_t  s_trip_total;
 static uint32_t  s_trip_index; // 0 = el mas viejo (orden del archivo, ver storage.h)
 static lv_obj_t *s_lbl_diag_body;
+static lv_obj_t *s_lbl_capture_btn;
 static lv_obj_t *s_lbl_oil_status;
 static lv_obj_t *s_lbl_filter_status;
 static lv_obj_t *s_lbl_maint_odometer;
@@ -315,6 +316,35 @@ static void update_diag_widgets(const vehicle_state_t *state)
 
     lv_label_set_text(s_lbl_diag_body, body);
     lv_obj_set_style_text_color(s_lbl_diag_body, state->data_valid ? COL_VALUE : COL_CAPTION, 0);
+
+    if (s_lbl_capture_btn != NULL) {
+        lv_label_set_text(s_lbl_capture_btn,
+                           state->bus_capture_active ? LV_SYMBOL_EYE_CLOSE " DETENER CAPTURA"
+                                                      : LV_SYMBOL_EYE_OPEN " CAPTURAR BUS");
+        lv_obj_set_style_text_color(s_lbl_capture_btn, state->bus_capture_active ? COL_DANGER : COL_ACCENT, 0);
+    }
+}
+
+/* Boton "CAPTURAR BUS" de Diagnostico: ingenieria reversa manual de PIDs
+ * propietarios (boost real, EGT) escuchando el bus con el scanner de
+ * taller conectado al mismo puerto (splitter Y) -- ver docs/pid-mapping.md
+ * y pid_engine.c (poll_task). Toggle: sin captura activa, pide arrancarla;
+ * con captura activa, pide pararla. Mismo patron de buzon que LEER/BORRAR
+ * en Fallas -- ui nunca llama a pid_engine ni obd_driver directo. */
+static void capture_bus_event_cb(lv_event_t *e)
+{
+    (void)e;
+    vehicle_state_t snapshot;
+    if (state_store_get(&snapshot) != ESP_OK) return;
+
+    if (snapshot.bus_capture_active) {
+        state_store_request_bus_capture_stop();
+        return;
+    }
+    if (!snapshot.data_valid) {
+        return; // sin conexion OBD todavia, no tiene sentido pedir ATMA
+    }
+    state_store_request_bus_capture_start();
 }
 
 static void on_state_change(const vehicle_state_t *state, void *ctx)
@@ -592,10 +622,25 @@ static void build_diag_screen(void)
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " VOLVER");
     lv_obj_center(back_lbl);
 
+    /* Fila propia (misma idea que LEER/BORRAR en Fallas): no entra junto a
+     * VOLVER en los 320px de ancho con texto legible. */
+    lv_obj_t *capture_btn = lv_btn_create(scr);
+    lv_obj_set_size(capture_btn, 200, 24);
+    lv_obj_set_pos(capture_btn, 6, 32);
+    lv_obj_set_style_bg_color(capture_btn, COL_CARD, 0);
+    lv_obj_set_style_radius(capture_btn, 5, 0);
+    lv_obj_set_style_shadow_width(capture_btn, 0, 0);
+    lv_obj_add_event_cb(capture_btn, capture_bus_event_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_capture_btn = lv_label_create(capture_btn);
+    lv_obj_set_style_text_font(s_lbl_capture_btn, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_lbl_capture_btn, COL_ACCENT, 0);
+    lv_label_set_text(s_lbl_capture_btn, LV_SYMBOL_EYE_OPEN " CAPTURAR BUS");
+    lv_obj_center(s_lbl_capture_btn);
+
     s_lbl_diag_body = lv_label_create(scr);
     lv_obj_set_style_text_font(s_lbl_diag_body, &lv_font_montserrat_14, 0);
     lv_obj_set_width(s_lbl_diag_body, 300);
-    lv_obj_align(s_lbl_diag_body, LV_ALIGN_TOP_LEFT, 10, 40);
+    lv_obj_align(s_lbl_diag_body, LV_ALIGN_TOP_LEFT, 10, 66);
 
     vehicle_state_t snapshot;
     if (state_store_get(&snapshot) == ESP_OK) {

@@ -47,6 +47,17 @@ static esp_timer_handle_t s_response_timeout_timer;
 static uint8_t s_response_buf[RESPONSE_BUF_SIZE];
 static size_t s_response_len = 0;
 
+/* --- Modo captura cruda (ATMA), ver obd_driver_start_raw_capture --- */
+static bool s_raw_capture_active = false;
+static obd_response_cb_t s_raw_capture_cb = NULL;
+static void *s_raw_capture_ctx = NULL;
+/* Una trama CAN en texto ("7E8 03 41 0C 1A F8...") entra facil en 64 bytes;
+ * 128 deja margen sin desperdiciar RAM. Una linea mas larga que esto se
+ * corta en silencio -- no deberia pasar con tramas CAN reales. */
+#define RAW_CAPTURE_LINE_BUF_SIZE 128
+static char s_raw_capture_line[RAW_CAPTURE_LINE_BUF_SIZE];
+static size_t s_raw_capture_line_len = 0;
+
 /* BUG DE INIT ENCONTRADO EN AUDITORIA (24 ago): si el ELM327 nunca responde
  * al primer paso del init (ATZ) — el propio codigo admite que no espera
  * confirmacion del write del CCCD antes de mandarlo, asi que perder el
@@ -330,6 +341,13 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             s_write_char_handle = 0;
             s_notify_char_handle = 0;
             s_ready = false;
+            /* Sin esto, una desconexion BLE en medio de una captura ATMA
+             * (el vGate se resetea con el motor, BLE se cae, etc.) dejaba
+             * s_raw_capture_active en true para siempre -- al reconectar,
+             * obd_driver_send_command lo hubiera seguido rechazando aunque
+             * ya nadie estuviera en modo captura. */
+            s_raw_capture_active = false;
+            s_raw_capture_line_len = 0;
             /* Si había un comando esperando respuesta cuando se desconectó,
              * liberar el turno acá también — si no, obd_driver_send_command
              * queda bloqueado esperando un mutex que nadie va a soltar hasta
@@ -346,6 +364,31 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
             return 0;
 
         case BLE_GAP_EVENT_NOTIFY_RX: {
+            if (s_raw_capture_active) {
+                /* ATMA no termina nunca en '>' -- no podemos esperar una
+                 * respuesta "completa" como con send_command. En vez de eso,
+                 * partimos el stream por saltos de linea (CR/LF, que es como
+                 * el ELM327 separa cada trama del bus) y avisamos linea por
+                 * linea apenas esta completa. */
+                uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
+                uint8_t chunk[64];
+                uint16_t copy_len = len < sizeof(chunk) ? len : sizeof(chunk);
+                ble_hs_mbuf_to_flat(event->notify_rx.om, chunk, copy_len, NULL);
+
+                for (uint16_t i = 0; i < copy_len; i++) {
+                    char c = (char)chunk[i];
+                    if (c == '\r' || c == '\n' || c == '>') {
+                        if (s_raw_capture_line_len > 0 && s_raw_capture_cb != NULL) {
+                            s_raw_capture_cb((uint8_t *)s_raw_capture_line, s_raw_capture_line_len, s_raw_capture_ctx);
+                        }
+                        s_raw_capture_line_len = 0;
+                    } else if (s_raw_capture_line_len < RAW_CAPTURE_LINE_BUF_SIZE - 1) {
+                        s_raw_capture_line[s_raw_capture_line_len++] = (uint8_t)c;
+                    }
+                }
+                return 0;
+            }
+
             /* Llega un pedazo de la respuesta ELM327. Acumulamos hasta ver '>'. */
             uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
             if (s_response_len + len < RESPONSE_BUF_SIZE) {
@@ -490,6 +533,10 @@ esp_err_t obd_driver_send_command(const char *command, obd_response_cb_t cb, voi
     if (!obd_driver_is_connected()) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_raw_capture_active) {
+        ESP_LOGW(TAG, "obd_driver_send_command('%s') ignorado: modo captura cruda (ATMA) activo", command);
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Espera a que no haya otro comando en vuelo. Timeout generoso porque el
      * ELM327 puede tardar (sobre todo autodetectando protocolo la primera vez). */
@@ -513,4 +560,26 @@ esp_err_t obd_driver_send_command(const char *command, obd_response_cb_t cb, voi
 bool obd_driver_is_connected(void)
 {
     return s_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ready;
+}
+
+esp_err_t obd_driver_start_raw_capture(obd_response_cb_t cb, void *ctx)
+{
+    if (!obd_driver_is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_raw_capture_cb = cb;
+    s_raw_capture_ctx = ctx;
+    s_raw_capture_line_len = 0;
+    s_raw_capture_active = true;
+    obd_write_raw("ATMA");
+    return ESP_OK;
+}
+
+void obd_driver_stop_raw_capture(void)
+{
+    if (!s_raw_capture_active) {
+        return;
+    }
+    s_raw_capture_active = false;
+    obd_write_raw(""); // cualquier caracter corta el modo monitor del ELM327, mandamos solo el CR
 }

@@ -91,6 +91,7 @@ esp_err_t state_store_set_disconnected(void)
     s_state.data_valid = false;
     s_state.dtc_read_in_progress = false;  // no vamos a recibir esa respuesta si estaba en vuelo
     s_state.dtc_clear_in_progress = false;
+    s_state.bus_capture_active = false;    // el modo ATMA no sobrevive una desconexion BLE
     s_state.last_update_us = esp_timer_get_time();
     unlock();
     notify_subscribers();
@@ -353,6 +354,55 @@ bool state_store_consume_dtc_clear_request(void)
     s_dtc_clear_requested = false;
     unlock();
     return was_requested;
+}
+
+static bool s_bus_capture_start_requested;
+static bool s_bus_capture_stop_requested;
+
+esp_err_t state_store_request_bus_capture_start(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_bus_capture_start_requested = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_consume_bus_capture_start_request(void)
+{
+    if (lock() != ESP_OK) return false;
+    bool was_requested = s_bus_capture_start_requested;
+    s_bus_capture_start_requested = false;
+    unlock();
+    return was_requested;
+}
+
+esp_err_t state_store_request_bus_capture_stop(void)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_bus_capture_stop_requested = true;
+    unlock();
+    return ESP_OK;
+}
+
+bool state_store_consume_bus_capture_stop_request(void)
+{
+    if (lock() != ESP_OK) return false;
+    bool was_requested = s_bus_capture_stop_requested;
+    s_bus_capture_stop_requested = false;
+    unlock();
+    return was_requested;
+}
+
+esp_err_t state_store_set_bus_capture_active(bool active)
+{
+    esp_err_t err = lock();
+    if (err != ESP_OK) return err;
+    s_state.bus_capture_active = active;
+    unlock();
+    notify_subscribers(); // ui redibuja el boton/estado en la pantalla de Diagnostico
+    return ESP_OK;
 }
 
 static bool s_sync_requested;

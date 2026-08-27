@@ -38,6 +38,7 @@ typedef struct {
     uint8_t  dtc_count;
     bool     dtc_read_in_progress;  // para que ui muestre "leyendo..." en vez de "sin fallas" mientras espera
     bool     dtc_clear_in_progress; // idem para "borrando..." mientras se manda el modo 04
+    bool     bus_capture_active;   // true mientras pid_engine esta en modo "escuchar todo el bus" (ATMA), ver mas abajo
     bool     data_valid;           // false hasta la primera lectura real del OBD
     int64_t  last_update_us;       // esp_timer_get_time() del ultimo cambio, para detectar "datos viejos"
 } vehicle_state_t;
@@ -83,6 +84,19 @@ bool state_store_consume_dtc_read_request(void);
 /** Mismo patron de buzon que arriba, para el boton "BORRAR CODIGOS" (modo 04). */
 esp_err_t state_store_request_dtc_clear(void);
 bool state_store_consume_dtc_clear_request(void);
+
+/**
+ * Buzon para el boton "CAPTURAR BUS" de la pantalla de Diagnostico
+ * (ingenieria reversa manual de PIDs propietarios, ver docs/pid-mapping.md):
+ * arranca/para el modo "escuchar todo el bus" (ATMA) en vez del polling
+ * normal de PIDs. `pid_engine` fija bus_capture_active en vehicle_state_t
+ * para que `ui` muestre si esta activo.
+ */
+esp_err_t state_store_request_bus_capture_start(void);
+bool state_store_consume_bus_capture_start_request(void);
+esp_err_t state_store_request_bus_capture_stop(void);
+bool state_store_consume_bus_capture_stop_request(void);
+esp_err_t state_store_set_bus_capture_active(bool active);
 
 /**
  * Mismo patron de buzon, para el boton de sincronizar a mano en la pantalla

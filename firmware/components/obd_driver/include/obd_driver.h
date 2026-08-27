@@ -37,3 +37,20 @@ esp_err_t obd_driver_send_command(const char *command, obd_response_cb_t cb, voi
 
 /** true si hay conexión BLE activa y el adaptador ya respondió al init (ATZ/ATE0). */
 bool obd_driver_is_connected(void);
+
+/**
+ * DEBUG/ingenieria reversa: pone el adaptador en modo "escuchar todo el bus"
+ * (ATMA) y llama a `cb` con cada linea cruda que llegue, una por una, sin
+ * parar, hasta obd_driver_stop_raw_capture(). A diferencia de
+ * obd_driver_send_command (que espera UNA respuesta terminada en '>'), ATMA
+ * es un stream infinito — por eso es una funcion aparte en vez de un modo
+ * mas de send_command.
+ *
+ * Mientras esto esta activo, obd_driver_send_command devuelve
+ * ESP_ERR_INVALID_STATE (no tiene sentido pedir PIDs mientras el bus esta en
+ * modo monitor).
+ */
+esp_err_t obd_driver_start_raw_capture(obd_response_cb_t cb, void *ctx);
+
+/** Corta el modo monitor iniciado por obd_driver_start_raw_capture. */
+void obd_driver_stop_raw_capture(void);

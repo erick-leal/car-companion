@@ -376,10 +376,25 @@ static void log_health_if_due(void)
              nimble_stack_free);
 }
 
+static void log_raw_capture_line(const uint8_t *raw, size_t raw_len, void *ctx)
+{
+    (void)ctx;
+    char text[128];
+    size_t copy_len = raw_len < sizeof(text) - 1 ? raw_len : sizeof(text) - 1;
+    memcpy(text, raw, copy_len);
+    text[copy_len] = '\0';
+    ESP_LOGI(TAG, "CAPTURA t=%lldms: %s", (long long)(esp_timer_get_time() / 1000), text);
+}
+
 static void poll_task(void *arg)
 {
     bool discovered = false;
     bool was_connected = false;
+    /* Copia local de si ESTA tarea sabe que esta en modo captura -- el
+     * bool en state_store (bus_capture_active) es para que ui lo muestre,
+     * este es para que el propio loop sepa si tiene que saltarse el
+     * polling normal sin tener que leer state_store en cada vuelta. */
+    bool bus_capture_active_local = false;
     /* Arranca en "ahora" (no 0) para que el recordatorio de abajo tambien
      * funcione si el OBD nunca llego a conectarse ni una vez desde el
      * arranque (ej. Vgate no enchufado) — no solo despues de una
@@ -399,8 +414,9 @@ static void poll_task(void *arg)
                  * false (encontrado revisando errores tipicos de manejo,
                  * 22 ago — ver nota en state_store.h). */
                 ESP_LOGW(TAG, "OBD desconectado, reintentando...");
-                state_store_set_disconnected();
+                state_store_set_disconnected(); // ya pone bus_capture_active=false en el store
                 discovered = false; // al reconectar, re-descubrir PIDs por si cambio de adaptador/auto
+                bus_capture_active_local = false; // el modo ATMA de obd_driver tambien se resetea solo al desconectar
                 disconnected_since_us = esp_timer_get_time();
             } else if ((esp_timer_get_time() - disconnected_since_us) >= 60LL * 1000000) {
                 /* Recordatorio cada ~60s mientras sigue sin conectar, para
@@ -420,6 +436,30 @@ static void poll_task(void *arg)
             discover_supported_pids();
             read_vin();
             discovered = true;
+        }
+
+        /* Modo captura de bus (boton "CAPTURAR BUS" en Diagnostico, ver
+         * ui.c): mientras esta activo, el bus queda en ATMA y no tiene
+         * sentido pollear PIDs normales ni atender DTC -- obd_driver ya
+         * rechaza send_command en este modo, pero ademas evitamos gastar el
+         * ciclo intentandolo y llenando el log de warnings. */
+        if (!bus_capture_active_local && state_store_consume_bus_capture_start_request()) {
+            if (obd_driver_start_raw_capture(log_raw_capture_line, NULL) == ESP_OK) {
+                ESP_LOGW(TAG, "MODO CAPTURA DE BUS ACTIVO (ATMA) -- PIDs normales pausados hasta detenerla");
+                bus_capture_active_local = true;
+                state_store_set_bus_capture_active(true);
+            }
+        }
+        if (bus_capture_active_local) {
+            if (state_store_consume_bus_capture_stop_request()) {
+                obd_driver_stop_raw_capture();
+                bus_capture_active_local = false;
+                state_store_set_bus_capture_active(false);
+                ESP_LOGI(TAG, "modo captura de bus detenido, retomando polling normal");
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(300));
+                continue; // no pollear PIDs ni atender DTC mientras se captura
+            }
         }
 
         /* Pedido de lectura de DTC desde ui (via el "buzon" de state_store,
