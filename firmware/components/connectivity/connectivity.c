@@ -86,14 +86,6 @@ static void on_sntp_time_synced(struct timeval *tv)
     int64_t offset_s = (int64_t)tv->tv_sec - (esp_timer_get_time() / 1000000);
     state_store_set_wall_clock_offset(offset_s);
 
-    /* Persistido para que el proximo arranque ya tenga una estimacion
-     * razonable de la hora real desde el principio, sin esperar a que WiFi
-     * conecte de nuevo (pedido real de Erick el 25 ago: un viaje que cierra
-     * antes del primer SNTP real de un arranque nuevo -- tipico despues de
-     * reflashear -- quedaba con la fecha del momento del sync, no la real).
-     * Ver storage_save_wall_clock_estimate() en storage.h. */
-    storage_save_wall_clock_estimate((int64_t)tv->tv_sec);
-
     /* Completa la fecha real de cualquier viaje que ya haya cerrado en este
      * mismo arranque antes de que SNTP alcanzara a sincronizar (bug real
      * visto en el auto el 24 ago: si el dispositivo se reiniciaba entre que

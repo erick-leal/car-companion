@@ -313,6 +313,49 @@ que sí se usa para *acciones* puntuales (ej. pedir una lectura de DTC).
    **no** al volver de `esp_lcd_panel_draw_bitmap()` (que solo encola la
    transferencia DMA, no la completa).
 
+## Revert: el reloj persistido guardaba fechas mal (27 ago)
+
+El reloj estimado persistido del 25 ago (ver seccion mas abajo) se probo en
+condiciones reales (no reflasheos seguidos) y salio mal: Erick hizo un
+viaje el 27 ago a las ~7:37am, y quedo guardado con fecha "26/08 20:30" --
+mas de 11 horas de diferencia, no un simple error de zona horaria.
+
+**Causa real:** el M5 estuvo apagado toda la noche. `clock.bin` tenia la
+ultima hora real conocida de la tarde anterior (~20:30 del 26). Al
+arrancar esta mañana, `storage_init()` cargaba esa hora vieja como si
+fuera confiable y la ponia en `state_store` como el reloj de pared de este
+arranque. El viaje de esta mañana cerro ANTES de que WiFi/SNTP alcanzaran
+a sincronizar la hora real de nuevo -- asi que `end_trip()` uso esa
+estimacion vieja para `recorded_at_epoch_s`, dejandolo con un valor NO
+CERO pero INCORRECTO.
+
+Ahi esta el problema de fondo: `storage_backfill_recorded_at_epoch()` (el
+mecanismo que se supone corrige esto cuando SNTP sincroniza de verdad)
+**solo toca viajes con `recorded_at_epoch_s == 0`** -- una vez que la
+estimacion vieja le puso un valor (aunque incorrecto), el backfill lo daba
+por "ya resuelto" y nunca lo tocaba. El comentario original decia "la
+estimacion queda vieja hasta que SNTP la corrija" -- eso era **falso**, el
+mecanismo de correccion nunca se disparaba para un valor ya no-cero.
+
+**Fix: revertido por completo.** `storage_save_wall_clock_estimate()`,
+`load_wall_clock_estimate()`, `/storage/clock.bin` y el llamado desde
+`on_sntp_time_synced()` en connectivity.c, todos eliminados. Vuelve al
+comportamiento de antes del 25 ago: un viaje sin hora real confirmada
+queda con `recorded_at_epoch_s = 0` ("desconocida") hasta que SNTP
+sincronice de verdad EN ESE MISMO ARRANQUE -- ahi si el backfill (24 ago,
+sigue vigente) lo completa correctamente. Peor caso sin cambios respecto a
+antes del 25 ago (reinicio entre que el viaje cierra y el primer SNTP real
+del arranque nuevo): fecha reconstruida aproximada al momento del sync, ya
+documentado como limitacion aceptada, sin RTC con bateria no hay forma
+mejor de resolverlo con este hardware.
+
+**Leccion real:** "que sobreviva un reinicio" y "que sea confiable" son
+cosas distintas -- un dato persistido sin forma de saber si esta stale
+(sin RTC, sin manera de medir cuanto tiempo paso apagado) es mas peligroso
+que no tener el dato, porque se lee y se usa como si fuera bueno.
+
+Confirmado que compila limpio.
+
 ## Identificar el auto por VIN (25 ago)
 
 Pedido real: "¿el M5 puede saber si estoy en la Maxus o en el MG3?". Hoy no
@@ -373,7 +416,15 @@ Confirmado que compila limpio. Falta confirmar en hardware real que
 efectivamente se apaga a los 3min sin OBD y se prende con un toque, y que
 el M5 ya no se calienta igual en el bolsillo.
 
-## Reloj estimado persistido en flash (25 ago)
+## Reloj estimado persistido en flash (25 ago) — REVERTIDO el 27 ago
+
+**Revertido por completo el 27 ago**, ver seccion mas abajo ("Revert: el
+reloj persistido guardaba fechas mal") — probado en uso real (no
+reflasheos, una noche real apagado) resulto peor que el problema que queria
+resolver: guardaba una fecha CONFIADAMENTE incorrecta en vez de dejarla
+como "desconocida, se corrige sola despues". Queda esta seccion para
+contexto historico de por que se intento, pero `storage_save_wall_clock_
+estimate()`/`clock.bin` ya no existen en el codigo.
 
 Segundo problema real de fecha, encontrado por Erick despues del fix del
 24 ago (backfill dentro del mismo arranque): manejo un viaje, volvio 3
@@ -391,11 +442,14 @@ offset()`) -- asi un viaje que cierra en un arranque nuevo, incluso antes
 de que WiFi/SNTP alcancen a sincronizar de verdad, ya tiene una fecha
 razonable en vez de 0/desconocida.
 
-Imprecision aceptada a proposito: si el dispositivo estuvo apagado mucho
+~~Imprecision aceptada a proposito: si el dispositivo estuvo apagado mucho
 tiempo de verdad (no un reflasheo rapido de segundos), la estimacion queda
-vieja hasta que SNTP la corrija -- este mecanismo no reemplaza un RTC con
-bateria real, solo acorta la ventana de "sin ninguna pista" que existia
-antes.
+vieja hasta que SNTP la corrija~~ — **resulto ser falso, ver "Revert: el
+reloj persistido guardaba fechas mal" mas arriba.** La estimacion vieja
+nunca se corregia sola: el backfill solo toca viajes con
+`recorded_at_epoch_s == 0`, y esta estimacion le ponia un valor no-cero
+(incorrecto) antes de que hubiera datos reales. Toda esta seccion quedo
+revertida el 27 ago.
 
 De paso, mismo dia: el boton "siguiente" de la pantalla de Viaje se
 agrando en dos vueltas -- primero de 44 a 90px (Erick tocaba

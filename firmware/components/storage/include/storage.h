@@ -90,21 +90,6 @@ esp_err_t storage_init(void);
  */
 esp_err_t storage_backfill_recorded_at_epoch(void);
 
-/**
- * Persiste la hora real conocida en flash (/storage/clock.bin), para que
- * sobreviva un reinicio -- `connectivity` la llama cada vez que SNTP
- * sincroniza de verdad. `storage_init()` la carga de vuelta al arrancar
- * como ESTIMACION PROVISORIA (offset de reloj de pared, ver
- * state_store_set_wall_clock_offset) antes de que WiFi/SNTP puedan
- * sincronizar de nuevo en este arranque -- asi un viaje que cierra ANTES
- * de que SNTP sincronice de verdad en un arranque nuevo (ej. justo despues
- * de reflashear) ya tiene una fecha razonable en vez de quedar en 0/
- * desconocida. Imprecisión aceptada: si el dispositivo estuvo apagado
- * mucho tiempo (no solo un reflasheo rapido), la estimacion queda vieja
- * hasta que SNTP sincronice de verdad y la corrija.
- */
-esp_err_t storage_save_wall_clock_estimate(int64_t epoch_s);
-
 /** Cantidad de viajes guardados en la particion local. */
 esp_err_t storage_get_trip_count(uint32_t *out_count);
 
