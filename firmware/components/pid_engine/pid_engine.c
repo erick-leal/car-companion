@@ -14,6 +14,17 @@ static const char *TAG = "pid_engine";
 
 #define POLL_INTERVAL_MS 150
 
+/* BUG REAL ENCONTRADO EN USO (3 sept): dejar el modo captura de bus (ATMA)
+ * prendido y olvidarse de tocar "DETENER CAPTURA" congela RPM en su ultimo
+ * valor real -- si ese valor era > 0, el viaje en curso nunca se cierra por
+ * el timeout de inactividad (nunca ve RPM=0) NI por desconexion (si el
+ * puerto OBD-II sigue con corriente con el motor apagado). Resultado real:
+ * una semana entera de viajes sin guardar, sin ningun aviso en el dashboard
+ * (el boton en rojo solo se ve si volves a entrar a Diagnostico). Este
+ * timeout es la red de seguridad: si alguien se olvida, vuelve solo al
+ * polling normal. */
+#define BUS_CAPTURE_MAX_DURATION_US (10LL * 60 * 1000000)
+
 static const standard_pid_t s_poll_list[] = {
     PID_ENGINE_RPM,
     PID_VEHICLE_SPEED,
@@ -395,6 +406,7 @@ static void poll_task(void *arg)
      * este es para que el propio loop sepa si tiene que saltarse el
      * polling normal sin tener que leer state_store en cada vuelta. */
     bool bus_capture_active_local = false;
+    int64_t bus_capture_started_us = 0;
     /* Arranca en "ahora" (no 0) para que el recordatorio de abajo tambien
      * funcione si el OBD nunca llego a conectarse ni una vez desde el
      * arranque (ej. Vgate no enchufado) — no solo despues de una
@@ -445,17 +457,24 @@ static void poll_task(void *arg)
          * ciclo intentandolo y llenando el log de warnings. */
         if (!bus_capture_active_local && state_store_consume_bus_capture_start_request()) {
             if (obd_driver_start_raw_capture(log_raw_capture_line, NULL) == ESP_OK) {
-                ESP_LOGW(TAG, "MODO CAPTURA DE BUS ACTIVO (ATMA) -- PIDs normales pausados hasta detenerla");
+                ESP_LOGW(TAG, "MODO CAPTURA DE BUS ACTIVO (ATMA) -- PIDs normales pausados hasta detenerla (o %lld min sin tocar nada)",
+                         (long long)(BUS_CAPTURE_MAX_DURATION_US / 60000000));
                 bus_capture_active_local = true;
+                bus_capture_started_us = esp_timer_get_time();
                 state_store_set_bus_capture_active(true);
             }
         }
         if (bus_capture_active_local) {
-            if (state_store_consume_bus_capture_stop_request()) {
+            bool timed_out = (esp_timer_get_time() - bus_capture_started_us) > BUS_CAPTURE_MAX_DURATION_US;
+            if (state_store_consume_bus_capture_stop_request() || timed_out) {
                 obd_driver_stop_raw_capture();
                 bus_capture_active_local = false;
                 state_store_set_bus_capture_active(false);
-                ESP_LOGI(TAG, "modo captura de bus detenido, retomando polling normal");
+                if (timed_out) {
+                    ESP_LOGW(TAG, "modo captura de bus AUTO-DETENIDO por timeout (se dejo prendido sin tocar DETENER CAPTURA), retomando polling normal");
+                } else {
+                    ESP_LOGI(TAG, "modo captura de bus detenido, retomando polling normal");
+                }
             } else {
                 vTaskDelay(pdMS_TO_TICKS(300));
                 continue; // no pollear PIDs ni atender DTC mientras se captura

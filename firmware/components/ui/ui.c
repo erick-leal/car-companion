@@ -218,9 +218,20 @@ static void update_dashboard_widgets(const vehicle_state_t *state)
 
     /* Estado de conexion: se deduce de state_store (data_valid), NO se
      * consulta a obd_driver — `ui` nunca debe depender de esa capa
-     * (ver regla de dependencias en firmware/README.md). */
-    lv_label_set_text(s_lbl_status, state->data_valid ? "OBD OK" : "SIN OBD");
-    lv_obj_set_style_text_color(s_lbl_status, state->data_valid ? COL_OK : COL_CAPTION, 0);
+     * (ver regla de dependencias en firmware/README.md).
+     *
+     * BUG REAL (3 sept): el modo captura de bus (boton en Diagnostico) se
+     * dejo prendido sin querer una semana entera, sin ningun aviso en el
+     * dashboard (donde realmente se mira mientras se maneja) — solo se veia
+     * volviendo a entrar a Diagnostico. Reusamos este mismo indicador, que
+     * SIEMPRE esta a la vista, para que sea imposible no notarlo. */
+    if (state->bus_capture_active) {
+        lv_label_set_text(s_lbl_status, "CAPTURA!");
+        lv_obj_set_style_text_color(s_lbl_status, COL_DANGER, 0);
+    } else {
+        lv_label_set_text(s_lbl_status, state->data_valid ? "OBD OK" : "SIN OBD");
+        lv_obj_set_style_text_color(s_lbl_status, state->data_valid ? COL_OK : COL_CAPTION, 0);
+    }
 
     lv_label_set_text(s_lbl_cel, state->check_engine_on ? "CHECK" : "");
 }
